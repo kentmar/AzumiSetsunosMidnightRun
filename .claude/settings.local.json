@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(curl -s -m 25 -X POST https://overpass-api.de/api/interpreter --data-urlencode 'data=[out:json][timeout:20];\\(way[\"building\"]\\(40.7500,-73.9920,40.7560,-73.9840\\);\\);out body;>;out skel qt;' -o /private/tmp/claude-501/-Users-kentmarllc-Desktop-Azumi-Setsuno-Webgame/7773c9fe-9aa0-474d-9753-64811be6536d/scratchpad/osm-test.json)",
+      "Bash(python3 -c ' *)",
+      "Bash(node scripts/bake-osm.mjs)",
+      "Bash(python3 -)",
+      "Bash(curl -sL -o ferrari.glb -w \"%{http_code} %{size_download}\\\\n\" https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/ferrari.glb)",
+      "Bash(curl -sL -o kenney.zip -w \"%{http_code} %{size_download}\\\\n\" \"https://kenney.nl/media/pages/assets/car-kit/d5011a4296-1677578707/kenney_car-kit.zip\")",
+      "Bash(file ferrari.glb kenney.zip)",
+      "Bash(curl -sL -o ferrari.glb -w \"%{http_code} %{size_download}\\\\n\" \"https://cdn.jsdelivr.net/gh/mrdoob/three.js@r169/examples/models/gltf/ferrari.glb\")"
+    ]
+  }
+}
