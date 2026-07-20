@@ -9,7 +9,7 @@ import { Input } from './input';
 import { TouchControls, IS_TOUCH } from './touch';
 import { Particles } from './particles';
 import { Sky } from './sky';
-import { City, FOG, SPAWN, META } from './city';
+import { City, FOG, SPAWN, META, nearestEdgePoint, EDGES } from './city';
 import { PlayerVehicle } from './vehicle';
 import { CrashSystem } from './crash';
 import { ChaseCamera } from './camera';
@@ -87,6 +87,57 @@ async function boot() {
 
   const panel = new Panel(() => vehicle.applyTuning());
   input.onPress('KeyP', () => panel.toggle());
+
+  // ---- GM mode: collision overlay + map-discrepancy flagging ----
+  // G toggles red collider outlines; F drops a flag at the car (persists to
+  // localStorage + beacon); X copies all flags as JSON for a bug report.
+  let gmMode = false;
+  const gmPos = new THREE.Vector3();
+  const gmFlags: { x: number; z: number; near: string; t: string }[] = (() => {
+    try { return JSON.parse(localStorage.getItem('nightrun-gm-flags') ?? '[]'); }
+    catch { return []; }
+  })();
+  const flagMarkers = new THREE.Group();
+  scene.add(flagMarkers);
+  const addFlagBeacon = (x: number, z: number) => {
+    const m = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.6, 0.6, 44, 6, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xff3344, transparent: true, opacity: 0.45,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      })
+    );
+    m.position.set(x, 22, z);
+    flagMarkers.add(m);
+  };
+  for (const f of gmFlags) addFlagBeacon(f.x, f.z);
+  input.onPress('KeyG', () => {
+    gmMode = !gmMode;
+    city.setDebug(gmMode);
+    flagMarkers.visible = true;
+    hud.popup(gmMode ? 'GM MODE — F FLAG · X EXPORT' : 'GM MODE OFF');
+  });
+  input.onPress('KeyF', () => {
+    if (!gmMode) return;
+    vehicle.worldPosition(gmPos);
+    const road = nearestEdgePoint(gmPos);
+    const near = EDGES[road.edge].name ?? EDGES[road.edge].cls;
+    const flag = {
+      x: Math.round(gmPos.x), z: Math.round(gmPos.z),
+      near, t: new Date().toISOString().slice(0, 16),
+    };
+    gmFlags.push(flag);
+    localStorage.setItem('nightrun-gm-flags', JSON.stringify(gmFlags));
+    addFlagBeacon(flag.x, flag.z);
+    hud.popup(`FLAG #${gmFlags.length} — ${near}`.toUpperCase());
+    console.log('[GM FLAG]', flag);
+  });
+  input.onPress('KeyX', () => {
+    if (!gmMode) return;
+    navigator.clipboard?.writeText(JSON.stringify(gmFlags, null, 2)).catch(() => {});
+    console.log('[GM FLAGS]', JSON.stringify(gmFlags, null, 2));
+    hud.popup(`${gmFlags.length} FLAGS COPIED — PASTE THEM TO CLAUDE`);
+  });
 
   let paused = false;
   const setPaused = (v: boolean) => {

@@ -29,18 +29,21 @@ const ROAD_CLASSES = {
   unclassified: { w: 13, major: false },
 };
 
+// three.js is right-handed: with +x = east, north must map to -z, otherwise
+// the whole world renders as a mirror image of real Manhattan (east on your
+// left when driving uptown). Avenues run along -z (uptown).
 function toGame(lat, lon) {
   const e = (lon - LON0) * M_PER_LON;
   const n = (lat - LAT0) * M_PER_LAT;
   return [
     e * Math.cos(THETA) - n * Math.sin(THETA),
-    e * Math.sin(THETA) + n * Math.cos(THETA),
+    -(e * Math.sin(THETA) + n * Math.cos(THETA)),
   ];
 }
 
 function toLatLon(x, z) {
-  const e = x * Math.cos(THETA) + z * Math.sin(THETA);
-  const n = -x * Math.sin(THETA) + z * Math.cos(THETA);
+  const e = x * Math.cos(THETA) - z * Math.sin(THETA);
+  const n = -x * Math.sin(THETA) - z * Math.cos(THETA);
   return [LAT0 + n / M_PER_LAT, LON0 + e / M_PER_LON];
 }
 

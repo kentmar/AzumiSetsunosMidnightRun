@@ -262,6 +262,28 @@ function rand(a: number, b: number) {
   return a + Math.random() * (b - a);
 }
 
+/** monotone-chain 2D convex hull; physics + debug outline share this shape */
+function convexHull2D(pts: [number, number][]): [number, number][] {
+  const p = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (p.length <= 3) return p;
+  const cross = (o: number[], a: number[], b: number[]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: [number, number][] = [];
+  for (const pt of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pt) <= 0) lower.pop();
+    lower.push(pt);
+  }
+  const upper: [number, number][] = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const pt = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pt) <= 0) upper.pop();
+    upper.push(pt);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
 function makeGlowTexture(): THREE.Texture {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
@@ -370,6 +392,9 @@ export class City {
   private lastNs = true;
   private lastEw = false;
   private boxes: BuildingBox[] = [];
+  private hulls: [number, number][][] = [];
+  private debugLines: THREE.LineSegments | null = null;
+  private debugScene!: THREE.Scene;
 
   constructor(scene: THREE.Scene, world: RAPIER_API.World, RAPIER: typeof RAPIER_API) {
     this.buildingUniforms = {
@@ -494,6 +519,38 @@ export class City {
     this.buildWater(scene);
     this.buildBorderWalls(scene);
     this.buildPortals(scene);
+    this.debugScene = scene;
+  }
+
+  /** GM mode: red curb-level outlines of the ACTUAL physics colliders, so
+   *  collider-vs-road discrepancies are visible at a glance (built lazily) */
+  setDebug(on: boolean) {
+    if (on && !this.debugLines) {
+      const pos: number[] = [];
+      const Y = 0.3;
+      for (const hull of this.hulls) {
+        for (let i = 0; i < hull.length; i++) {
+          const [x1, z1] = hull[i];
+          const [x2, z2] = hull[(i + 1) % hull.length];
+          pos.push(x1, Y, z1, x2, Y, z2);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      this.debugLines = new THREE.LineSegments(
+        geo,
+        new THREE.LineBasicMaterial({
+          color: 0xff2233,
+          transparent: true,
+          opacity: 0.9,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        })
+      );
+      this.debugLines.frustumCulled = false;
+      this.debugScene.add(this.debugLines);
+    }
+    if (this.debugLines) this.debugLines.visible = on;
   }
 
   /** rivers past the highways: animated wave grid drawn only where the real
@@ -820,14 +877,23 @@ export class City {
       }
       for (const t of tris) idx.push(roofBase + t[0], roofBase + t[2], roofBase + t[1]);
 
-      const coll = world.createCollider(
+      // convex hull of the real footprint — an AABB here bulges into streets
+      // wherever the footprint is rotated or L-shaped (everything off-grid)
+      const hull = convexHull2D(pts);
+      const verts = new Float32Array(hull.length * 2 * 3);
+      hull.forEach(([hx, hz], k) => {
+        verts.set([hx, 0, hz], k * 6);
+        verts.set([hx, h, hz], k * 6 + 3);
+      });
+      const desc =
+        RAPIER.ColliderDesc.convexHull(verts) ??
         RAPIER.ColliderDesc.cuboid((maxX - minX) / 2, h / 2, (maxZ - minZ) / 2)
-          .setTranslation((minX + maxX) / 2, h / 2, (minZ + maxZ) / 2),
-        wallBody
-      );
+          .setTranslation((minX + maxX) / 2, h / 2, (minZ + maxZ) / 2);
+      const coll = world.createCollider(desc, wallBody);
       coll.setCollisionGroups(groups(G_BUILDING, G_ALL));
       coll.setFriction(0.4);
       this.boxes.push({ minX, maxX, minZ, maxZ, h });
+      this.hulls.push(hull);
     }
 
     const geo = new THREE.BufferGeometry();

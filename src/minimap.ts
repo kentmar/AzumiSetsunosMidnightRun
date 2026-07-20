@@ -2,9 +2,10 @@ import * as THREE from 'three';
 import { EDGES, MAP_EDGE, elevationAt } from './city';
 import DATA from './assets/midtown.json';
 
-// Rotating car-up minimap (Midnight Club style). The full OSM map — building
-// footprints + real road network — is pre-rendered once to an offscreen canvas;
-// each frame we blit a rotated crop around the player and overlay live markers.
+// Rotating car-up minimap (Midnight Club style): heading always points up, the
+// map turns around you. (The fullscreen M map stays north-up.) The full OSM map
+// — building footprints + real road network — is pre-rendered once to an
+// offscreen canvas; each frame we blit a rotated crop and overlay live markers.
 
 const VIEW_METERS = 520; // world meters shown across the minimap diameter
 
@@ -74,7 +75,7 @@ export class Minimap {
     const b = this.base.getContext('2d')!;
     const toPx = (wx: number, wz: number): [number, number] => [
       (wx + MAP_EDGE) * this.baseScale,
-      (MAP_EDGE - wz) * this.baseScale, // +z (uptown) = up
+      (wz + MAP_EDGE) * this.baseScale, // north = -z (uptown) = up
     ];
 
     // real topographic contour underlay (2 m isolines from the baked USGS grid)
@@ -88,7 +89,7 @@ export class Minimap {
       const hAt: number[] = new Array(R * R);
       for (let py = 0; py < R; py++) {
         for (let px = 0; px < R; px++) {
-          hAt[py * R + px] = elevationAt(worldOf(px), MAP_EDGE - (py / (R - 1)) * MAP_EDGE * 2);
+          hAt[py * R + px] = elevationAt(worldOf(px), worldOf(py));
         }
       }
       // thermal ramp: cold blue at sea level -> hot red at the highest ground
@@ -170,8 +171,8 @@ export class Minimap {
     // boundary = detonation line
     b.strokeStyle = 'rgba(255,60,70,0.9)';
     b.lineWidth = 5;
-    const [bx0, by0] = toPx(-MAP_EDGE + 12, MAP_EDGE - 12);
-    const [bx1, by1] = toPx(MAP_EDGE - 12, -MAP_EDGE + 12);
+    const [bx0, by0] = toPx(-MAP_EDGE + 12, -MAP_EDGE + 12);
+    const [bx1, by1] = toPx(MAP_EDGE - 12, MAP_EDGE - 12);
     b.strokeRect(bx0, by0, bx1 - bx0, by1 - by0);
   }
 
@@ -230,7 +231,7 @@ export class Minimap {
 
     const toPx = (wx: number, wz: number): [number, number] => [
       ((wx + MAP_EDGE) / (2 * MAP_EDGE)) * S,
-      ((MAP_EDGE - wz) / (2 * MAP_EDGE)) * S,
+      ((wz + MAP_EDGE) / (2 * MAP_EDGE)) * S, // north = -z = up
     ];
     const dot = (wp: THREE.Vector3, color: string, r: number) => {
       const [px, py] = toPx(wp.x, wp.z);
@@ -247,9 +248,9 @@ export class Minimap {
       dot(checkpoint, '#41a8ff', 8 + Math.sin(performance.now() * 0.006) * 2.5);
     }
 
-    // player arrow, rotated to heading (north-up map)
+    // player arrow, rotated to heading (north-up map; north = -z)
     const [px, py] = toPx(pos.x, pos.z);
-    const yaw = Math.atan2(forward.x, forward.z);
+    const yaw = Math.atan2(forward.x, -forward.z);
     ctx.save();
     ctx.translate(px, py);
     ctx.rotate(yaw);
@@ -285,7 +286,7 @@ export class Minimap {
     const ctx = this.ctx;
     const D = this.size * this.dpr;
     const c = D / 2;
-    const yaw = Math.atan2(forward.x, forward.z);
+    const yaw = Math.atan2(forward.x, -forward.z); // screen heading; north = -z
     const pxPerM = D / VIEW_METERS;
 
     ctx.clearRect(0, 0, D, D);
@@ -294,19 +295,19 @@ export class Minimap {
     ctx.arc(c, c, c - 2, 0, Math.PI * 2);
     ctx.clip();
 
-    // rotated crop of the pre-rendered city
+    // rotated crop of the pre-rendered city: car heading = screen up
     ctx.translate(c, c);
     ctx.rotate(-yaw);
     const srcHalf = (VIEW_METERS / 2) * this.baseScale * 1.5;
     const sx = (pos.x + MAP_EDGE) * this.baseScale - srcHalf;
-    const sy = (MAP_EDGE - pos.z) * this.baseScale - srcHalf;
+    const sy = (pos.z + MAP_EDGE) * this.baseScale - srcHalf;
     const destHalf = (D / 2) * 1.5;
     ctx.drawImage(this.base, sx, sy, srcHalf * 2, srcHalf * 2, -destHalf, -destHalf, destHalf * 2, destHalf * 2);
 
     // live markers (world offsets, north-up inside the rotated frame)
     const mark = (wp: THREE.Vector3, color: string, r: number, clampEdge: boolean) => {
       let mx = (wp.x - pos.x) * pxPerM;
-      let my = -(wp.z - pos.z) * pxPerM;
+      let my = (wp.z - pos.z) * pxPerM; // north = -z = up on screen
       const d = Math.hypot(mx, my);
       const lim = c - 12 * this.dpr;
       if (d > lim) {
@@ -328,7 +329,7 @@ export class Minimap {
       mark(checkpoint, '#41a8ff', pulse, true);
     }
 
-    // north indicator
+    // compass N: rides the map's north edge, glyph kept upright
     ctx.save();
     ctx.translate(0, -(c - 13 * this.dpr));
     ctx.rotate(yaw);
