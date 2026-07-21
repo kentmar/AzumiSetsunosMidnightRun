@@ -123,7 +123,10 @@ export class ChaseCamera {
         this.smoothedPos.copy(_origin).addScaledVector(_arm, d);
       }
     }
-    if (this.smoothedPos.y < 0.4) this.smoothedPos.y = 0.4;
+    // keep the camera out of the road, but follow the car into the tunnel
+    // sub-layer instead of snapping back to street level
+    const minY = Math.min(0.4, _carPos.y + 0.9);
+    if (this.smoothedPos.y < minY) this.smoothedPos.y = minY;
     // past the seawall the camera stays locked above the surface while the car sinks
     if (vehicle.underwater && this.smoothedPos.y < WATER_Y + 0.7) {
       this.smoothedPos.y = WATER_Y + 0.7;

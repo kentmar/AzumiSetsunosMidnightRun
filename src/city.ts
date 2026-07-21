@@ -48,17 +48,29 @@ export const MAP_EDGE =
 export const WARN_START = MAP_EDGE - 90;
 export const FOG = { color: 0x160710, density: 0.00075 };
 
-/** playable rectangle (23rd–40th, river to river); the mirror perimeter */
+// North/south borders are pulled IN to clean lines (GM-flagged): the strip of
+// real buildings just beyond each line becomes the natural barrier wall.
+const NORTH_Z = -845; // ~9th/7th Ave crossing line (was EXT.minZ -877)
+const SOUTH_Z = 671; // between E22 and E21 (was EXT.maxZ +718)
+
+/** playable rectangle (river to river, cropped N/S to the barrier lines) */
 export const BORDER = {
   minX: EXT.minX - 40,
   maxX: EXT.maxX + 40,
-  minZ: EXT.minZ - 40,
-  maxZ: EXT.maxZ + 40,
+  minZ: NORTH_Z,
+  maxZ: SOUTH_Z,
 };
 
 /** river surface height: above the (flat) driving plane, so crossing the
  *  seawall visually puts the car UNDER the water */
 export const WATER_Y = 2.6;
+
+// Lincoln Tunnel: a two-way bore that ramps below the street into a sub-layer
+// heading toward NJ (−x). Only the short ramp where the floor is still above
+// y=−1 needs a hole in the ground slab; past that the car is simply beneath it.
+const TUN = { W: 18, LEN: 130, RAMP0: 3, RAMP1: 30, BOTTOM: -7.5, CEIL: 6.8, WARP: 64, GATE: 96 };
+const tunFloorY = (s: number) =>
+  s <= TUN.RAMP0 ? 0 : s >= TUN.RAMP1 ? TUN.BOTTOM : (TUN.BOTTOM * (s - TUN.RAMP0)) / (TUN.RAMP1 - TUN.RAMP0);
 
 export interface TunnelPortal {
   name: string;
@@ -409,6 +421,9 @@ export class City {
   private hulls: [number, number][][] = [];
   private debugLines: THREE.LineSegments | null = null;
   private debugScene!: THREE.Scene;
+  private tunnelHole: { x0: number; x1: number; z0: number; z1: number } | null = null;
+  /** open-cut approach: no buildings may stand over the tunnel mouth */
+  private tunnelClear: { x0: number; x1: number; z0: number; z1: number } | null = null;
   // GM ghost-delete support: per-building collider + vertex range in the merged geometry
   private world!: RAPIER_API.World;
   private buildingsGeo!: THREE.BufferGeometry;
@@ -519,13 +534,46 @@ export class City {
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.02;
     scene.add(ground);
+    // locate the tunnel mouths up front; carve a small hole in the ground slab
+    // where the Lincoln ramp drops below street level (rest of the bore is
+    // simply beneath the slab, so no hole needed there)
+    this.portals = findTunnelPortals();
+    const lincoln = this.portals.find((p) => /LINCOLN/.test(p.name));
+    if (lincoln) {
+      // hole must run west far enough that the car's ROOF clears the slab
+      // underside (y=−1) before the solid ground resumes — not just its wheels
+      this.tunnelHole = {
+        x0: lincoln.pos.x - 26, x1: lincoln.pos.x + 6,
+        z0: lincoln.pos.z - TUN.W / 2 - 1.5, z1: lincoln.pos.z + TUN.W / 2 + 1.5,
+      };
+      // OSM stacks buildings right over the portal; clear an approach apron so
+      // the mouth is actually drivable (the real Dyer Ave approach is open cut)
+      this.tunnelClear = {
+        x0: lincoln.pos.x - 14, x1: lincoln.pos.x + 42,
+        z0: lincoln.pos.z - TUN.W / 2 - 4, z1: lincoln.pos.z + TUN.W / 2 + 4,
+      };
+    }
+
     const gBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    const gColl = world.createCollider(
-      RAPIER.ColliderDesc.cuboid(groundSize / 2, 0.5, groundSize / 2).setTranslation(0, -0.5, 0),
-      gBody
-    );
-    gColl.setCollisionGroups(groups(G_GROUND, G_ALL));
-    gColl.setFriction(1.0);
+    const G = groundSize / 2;
+    const addGround = (cx: number, cz: number, hx: number, hz: number) => {
+      if (hx <= 0 || hz <= 0) return;
+      const c = world.createCollider(
+        RAPIER.ColliderDesc.cuboid(hx, 0.5, hz).setTranslation(cx, -0.5, cz), gBody
+      );
+      c.setCollisionGroups(groups(G_GROUND, G_ALL));
+      c.setFriction(1.0);
+    };
+    const hole = this.tunnelHole;
+    if (hole) {
+      const { x0, x1, z0, z1 } = hole;
+      addGround((-G + x0) / 2, 0, (x0 + G) / 2, G); // west of hole
+      addGround((x1 + G) / 2, 0, (G - x1) / 2, G); // east of hole
+      addGround((x0 + x1) / 2, (-G + z0) / 2, (x1 - x0) / 2, (z0 + G) / 2); // north band
+      addGround((x0 + x1) / 2, (z1 + G) / 2, (x1 - x0) / 2, (G - z1) / 2); // south band
+    } else {
+      addGround(0, 0, G, G);
+    }
 
     // matte near-black fill; the glow comes from edge lines + markings
     this.roadMat = new THREE.MeshStandardMaterial({
@@ -731,11 +779,16 @@ export class City {
   private buildBorderWalls(scene: THREE.Scene) {
     const H = 16;
     const spots: { x: number; z: number; w: number }[] = [];
+    // the border lines now cut across the grid — place a blockade wherever a
+    // drivable edge CROSSES z=minZ or z=maxZ (not just at natural road-ends)
     for (const at of [BORDER.minZ, BORDER.maxZ]) {
       for (const e of EDGES) {
-        for (const end of [e.pts[0], e.pts[e.pts.length - 1]]) {
-          if (Math.abs(end[1] - at) > 70) continue;
-          const x = end[0];
+        for (let k = 1; k < e.pts.length; k++) {
+          const [ax, az] = e.pts[k - 1];
+          const [bx, bz] = e.pts[k];
+          if ((az - at) * (bz - at) > 0) continue; // segment doesn't straddle the line
+          const t = (at - az) / (bz - az || 1);
+          const x = ax + (bx - ax) * t;
           if (x < BORDER.minX + 25 || x > BORDER.maxX - 25) continue;
           if (spots.some((s) => Math.abs(s.x - x) < 16 && Math.abs(s.z - at) < 90)) continue;
           spots.push({ x, z: at + (at > 0 ? -6 : 6), w: e.w + 24 });
@@ -938,102 +991,116 @@ export class City {
     this.fence = { geo, segs };
   }
 
-  /** drivable Lincoln Tunnel stub: an S-curved wireframe tube descending
-   *  toward Jersey, sealed halfway by a warning grid — the warp point sits
-   *  just before the barrier, so entering the tube far enough warps you */
+  /** two-way Lincoln Tunnel bore: ramps from the street mouth down into a
+   *  sub-layer heading toward NJ (−x), lit ceiling, warp point underground,
+   *  sealed toward Jersey by a warning grid + physical backstop */
   private buildLincolnTube(
     scene: THREE.Scene,
     portal: TunnelPortal,
     world: RAPIER_API.World,
     RAPIER: typeof RAPIER_API
   ) {
-    const W = 11, H = 6.4, LEN = 120, N = 12;
-    const inYaw = portal.exitYaw + Math.PI; // into the tunnel, toward the river
-    const dx = Math.sin(inYaw), dz = Math.cos(inYaw);
-    const px = dz, pz = -dx;
-    const path = (t: number): [number, number] => {
-      const lat = Math.sin(t * Math.PI * 2) * 8; // gentle S
-      return [portal.pos.x + dx * t * LEN + px * lat, portal.pos.z + dz * t * LEN + pz * lat];
-    };
+    const { W, LEN, CEIL, WARP, GATE } = TUN;
+    const mouthX = portal.pos.x, mouthZ = portal.pos.z;
+    const zL = mouthZ - W / 2, zR = mouthZ + W / 2;
+    const cx = (s: number) => mouthX - s; // heads west toward the river
+    const N = 26, ds = LEN / N;
 
-    const lpos: number[] = [];
-    const spos: number[] = [];
-    const sidx: number[] = [];
     const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    let prev = path(0);
-    let prevPerp: [number, number] = [px, pz];
-    for (let i = 1; i <= N; i++) {
-      const t = i / N;
-      const cur = path(t);
-      const tanX = cur[0] - prev[0], tanZ = cur[1] - prev[1];
-      const segLen = Math.hypot(tanX, tanZ) || 1;
-      const perp: [number, number] = [tanZ / segLen, -tanX / segLen];
-      // wireframe ring at each step
-      const [cx, cz] = cur;
-      const bl = [cx - perp[0] * W / 2, cz - perp[1] * W / 2];
-      const br = [cx + perp[0] * W / 2, cz + perp[1] * W / 2];
-      lpos.push(bl[0], 0, bl[1], bl[0], H, bl[1]);
-      lpos.push(br[0], 0, br[1], br[0], H, br[1]);
-      lpos.push(bl[0], H, bl[1], br[0], H, br[1]);
-      // dark shell: left/right walls + ceiling between consecutive rings
-      const pbl = [prev[0] - prevPerp[0] * W / 2, prev[1] - prevPerp[1] * W / 2];
-      const pbr = [prev[0] + prevPerp[0] * W / 2, prev[1] + prevPerp[1] * W / 2];
-      const quad = (a: number[], ay0: number, ay1: number, b: number[], by0: number, by1: number) => {
-        const vi = spos.length / 3;
-        spos.push(a[0], ay0, a[1], b[0], by0, b[1], b[0], by1, b[1], a[0], ay1, a[1]);
-        sidx.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
-      };
-      quad(pbl, 0, H, bl, 0, H);
-      quad(pbr, 0, H, br, 0, H);
-      quad([pbl[0], pbl[1]], H, H, [br[0], br[1]], H, H); // ceiling (flat quad)
-      // physical side walls so the car stays in the tube
-      const yawT = Math.atan2(tanX, tanZ);
-      const q = { x: 0, y: Math.sin(yawT / 2), z: 0, w: Math.cos(yawT / 2) };
-      for (const s of [-1, 1]) {
-        const wc = [(prev[0] + cur[0]) / 2 + perp[0] * s * (W / 2 + 0.5), (prev[1] + cur[1]) / 2 + perp[1] * s * (W / 2 + 0.5)];
-        const coll = world.createCollider(
-          RAPIER.ColliderDesc.cuboid(0.5, 3.4, segLen / 2 + 0.8)
-            .setTranslation(wc[0], 3.2, wc[1])
+    const floorPos: number[] = [], floorIdx: number[] = [];
+    const shellPos: number[] = [], shellIdx: number[] = [];
+    const ribPos: number[] = [];
+    const litPos: number[] = [], litIdx: number[] = [];
+    const quad = (arr: number[], idx: number[], a: number[], b: number[], c: number[], d: number[]) => {
+      const vi = arr.length / 3;
+      arr.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], d[0], d[1], d[2]);
+      idx.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+    };
+    for (let i = 0; i <= N; i++) {
+      const s = i * ds, x = cx(s), fy = tunFloorY(s), cy = fy + CEIL;
+      ribPos.push(x, fy, zL, x, cy, zL, x, fy, zR, x, cy, zR, x, cy, zL, x, cy, zR);
+      if (i > 0) {
+        const ps = s - ds, pX = cx(ps), pfy = tunFloorY(ps), pcy = pfy + CEIL;
+        quad(floorPos, floorIdx, [pX, pfy, zL], [x, fy, zL], [x, fy, zR], [pX, pfy, zR]);
+        quad(shellPos, shellIdx, [pX, pfy, zL], [x, fy, zL], [x, cy, zL], [pX, pcy, zL]); // left wall
+        quad(shellPos, shellIdx, [pX, pfy, zR], [x, fy, zR], [x, cy, zR], [pX, pcy, zR]); // right wall
+        quad(shellPos, shellIdx, [pX, pcy, zL], [x, cy, zL], [x, cy, zR], [pX, pcy, zR]); // ceiling
+        // ceiling light strip down the centre
+        quad(litPos, litIdx, [pX, pcy - 0.06, mouthZ - 1.6], [x, cy - 0.06, mouthZ - 1.6], [x, cy - 0.06, mouthZ + 1.6], [pX, pcy - 0.06, mouthZ + 1.6]);
+        // tilted floor collider segment (car drives on this)
+        const segLen = Math.hypot(ds, pfy - fy);
+        const ang = Math.atan2(pfy - fy, ds); // upward slope toward the mouth
+        const q = { x: 0, y: 0, z: Math.sin(ang / 2), w: Math.cos(ang / 2) };
+        const fc = world.createCollider(
+          RAPIER.ColliderDesc.cuboid(segLen / 2 + 0.2, 0.25, W / 2)
+            .setTranslation((x + pX) / 2, (fy + pfy) / 2 - 0.22, mouthZ)
             .setRotation(q),
           body
         );
-        coll.setCollisionGroups(groups(G_BUILDING, G_ALL));
+        fc.setCollisionGroups(groups(G_GROUND, G_ALL));
+        fc.setFriction(1.0);
       }
-      prev = cur;
-      prevPerp = perp;
     }
+    // street-level apron: the ground hole opens a few metres east of the bore
+    // start, so the floor must reach out past the lip or the car drops through
+    quad(floorPos, floorIdx, [mouthX + 8.5, 0, zL], [mouthX, 0, zL], [mouthX, 0, zR], [mouthX + 8.5, 0, zR]);
+    const apron = world.createCollider(
+      RAPIER.ColliderDesc.cuboid(4.5, 0.25, W / 2).setTranslation(mouthX + 4, -0.22, mouthZ),
+      body
+    );
+    apron.setCollisionGroups(groups(G_GROUND, G_ALL));
+    apron.setFriction(1.0);
+
+    // tall side walls keep the car in the bore over the whole depth range
+    for (const zSide of [zL - 0.4, zR + 0.4]) {
+      const c = world.createCollider(
+        RAPIER.ColliderDesc.cuboid(LEN / 2, 8, 0.4).setTranslation(mouthX - LEN / 2, -1.5, zSide),
+        body
+      );
+      c.setCollisionGroups(groups(G_BUILDING, G_ALL));
+    }
+
+    const addMesh = (p: number[], ix: number[], mat: THREE.Material) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+      g.setIndex(ix);
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, mat);
+      m.frustumCulled = false;
+      scene.add(m);
+    };
+    // all unlit + double-sided: there is no light source under the street, and
+    // single-sided quads get culled when you are inside the bore looking out
+    addMesh(shellPos, shellIdx, new THREE.MeshBasicMaterial({ color: 0x0a0b14, side: THREE.DoubleSide, fog: false }));
+    addMesh(floorPos, floorIdx, new THREE.MeshBasicMaterial({ color: 0x14141d, side: THREE.DoubleSide, fog: false }));
+    addMesh(litPos, litIdx, new THREE.MeshBasicMaterial({ color: 0xffeec4, side: THREE.DoubleSide, fog: false }));
     const rings = new THREE.LineSegments(
-      new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(lpos, 3)),
-      new THREE.LineBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.75 })
+      new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(ribPos, 3)),
+      new THREE.LineBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0.85, fog: false })
     );
     rings.frustumCulled = false;
     scene.add(rings);
-    const sgeo = new THREE.BufferGeometry();
-    sgeo.setAttribute('position', new THREE.Float32BufferAttribute(spos, 3));
-    sgeo.setIndex(sidx);
-    const shell = new THREE.Mesh(
-      sgeo,
-      new THREE.MeshBasicMaterial({ color: 0x030409, side: THREE.DoubleSide })
-    );
-    shell.frustumCulled = false;
-    scene.add(shell);
+    // centre lane line — sells the two-way bore
+    const lane: number[] = [];
+    for (let s = 6; s < LEN - 4; s += 8) lane.push(cx(s), tunFloorY(s) + 0.05, mouthZ, cx(s + 4), tunFloorY(s + 4) + 0.05, mouthZ);
+    scene.add(new THREE.LineSegments(
+      new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(lane, 3)),
+      new THREE.LineBasicMaterial({ color: 0xffd24a, transparent: true, opacity: 0.5 })
+    ));
 
-    // warp trigger moves INSIDE the tube; the exit heading stays toward the city
-    const [wx, wz] = path(0.55);
-    portal.pos.set(wx, 0, wz);
-    // sealed halfway to Jersey: pulsing grid + physical backstop
-    const [gx, gz] = path(0.72);
-    const gYawT = Math.atan2(dx, dz);
+    // warp trigger sits underground past the ramp (y ignored by the game check)
+    portal.pos.set(cx(WARP), tunFloorY(WARP), mouthZ);
+    // sealed toward Jersey: pulsing grid + physical backstop
+    const gx = cx(GATE), gy = tunFloorY(GATE);
     const gMat = this.makeWarnMat();
-    const gate = new THREE.Mesh(new THREE.PlaneGeometry(W + 2, H + 2), gMat);
-    gate.position.set(gx, H / 2, gz);
-    gate.rotation.y = gYawT;
+    const gate = new THREE.Mesh(new THREE.PlaneGeometry(W, CEIL), gMat);
+    gate.position.set(gx, gy + CEIL / 2, mouthZ);
+    gate.rotation.y = Math.PI / 2;
     gate.frustumCulled = false;
     scene.add(gate);
-    this.walls.push({ mat: gMat, cx: gx, cz: gz });
-    const bq = { x: 0, y: Math.sin(gYawT / 2), z: 0, w: Math.cos(gYawT / 2) };
+    this.walls.push({ mat: gMat, cx: gx, cz: mouthZ });
     const stop = world.createCollider(
-      RAPIER.ColliderDesc.cuboid(W / 2 + 1, 4, 0.6).setTranslation(gx + dx * 4, 3.5, gz + dz * 4).setRotation(bq),
+      RAPIER.ColliderDesc.cuboid(0.6, 4, W / 2).setTranslation(gx - 3, gy + 3.5, mouthZ),
       body
     );
     stop.setCollisionGroups(groups(G_BUILDING, G_ALL));
@@ -1041,7 +1108,10 @@ export class City {
 
   /** glowing crosstown warp gates at the real tunnel mouths */
   private buildPortals(scene: THREE.Scene, world: RAPIER_API.World, RAPIER: typeof RAPIER_API) {
-    this.portals = findTunnelPortals();
+    // this.portals was resolved in the constructor (the ground hole needs the
+    // Lincoln mouth); gates draw at the street mouths before the tube moves
+    // Lincoln's warp point underground
+    if (!this.portals.length) this.portals = findTunnelPortals();
     const glowTex = makeGlowTexture();
     for (const p of this.portals) {
       const g = new THREE.Group();
@@ -1206,6 +1276,44 @@ export class City {
     scene.add(inst);
   }
 
+  /** procedural infill for the sparse northern band so the top edge reads
+   *  dense "all the way across" (GM-flagged around W40th). Footprints avoid
+   *  roads + existing buildings; they get real colliders, windows, glitch. */
+  private northInfill(): { pts: [number, number][]; h: number; s: number }[] {
+    const out: { pts: [number, number][]; h: number; s: number }[] = [];
+    const zLo = BORDER.minZ + 6;
+    const zHi = BORDER.minZ + 140;
+    const roadPts: [number, number][] = [];
+    for (const e of EDGES) for (const p of e.pts) {
+      if (p[1] > zLo - 45 && p[1] < zHi + 45) roadPts.push(p as [number, number]);
+    }
+    const occ: [number, number][] = [];
+    for (const b of DATA.buildings) {
+      const c = b.pts as [number, number][];
+      const cx = c.reduce((s, p) => s + p[0], 0) / c.length;
+      const cz = c.reduce((s, p) => s + p[1], 0) / c.length;
+      if (cz > zLo - 60 && cz < zHi + 60) occ.push([cx, cz]);
+    }
+    const near = (arr: [number, number][], x: number, z: number, r: number) =>
+      arr.some((p) => (p[0] - x) ** 2 + (p[1] - z) ** 2 < r * r);
+    for (let x = BORDER.minX + 60; x < BORDER.maxX - 60; x += 44) {
+      for (let z = zLo; z < zHi; z += 44) {
+        const jx = x + rand(-9, 9), jz = z + rand(-9, 9);
+        if (near(roadPts, jx, jz, 16)) continue;
+        if (near(occ, jx, jz, 24)) continue;
+        const w = rand(15, 28), d = rand(17, 32);
+        if (near(roadPts, jx - w / 2, jz, 11) || near(roadPts, jx + w / 2, jz, 11) ||
+            near(roadPts, jx, jz - d / 2, 11) || near(roadPts, jx, jz + d / 2, 11)) continue;
+        out.push({
+          pts: [[jx - w / 2, jz - d / 2], [jx + w / 2, jz - d / 2], [jx + w / 2, jz + d / 2], [jx - w / 2, jz + d / 2]],
+          h: rand(22, 66), s: Math.random() * 100,
+        });
+        occ.push([jx, jz]);
+      }
+    }
+    return out;
+  }
+
   private buildBuildings(scene: THREE.Scene, world: RAPIER_API.World, RAPIER: typeof RAPIER_API) {
     const pos: number[] = [];
     const nor: number[] = [];
@@ -1216,7 +1324,18 @@ export class City {
     const wallBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     this.world = world;
 
-    for (const b of DATA.buildings) {
+    const clear = this.tunnelClear;
+    for (const b of [...DATA.buildings, ...this.northInfill()]) {
+      // nothing may stand over the tunnel portal approach
+      if (clear) {
+        const p = b.pts as [number, number][];
+        let bx0 = 1e9, bx1 = -1e9, bz0 = 1e9, bz1 = -1e9;
+        for (const [x, z] of p) {
+          if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+          if (z < bz0) bz0 = z; if (z > bz1) bz1 = z;
+        }
+        if (bx1 > clear.x0 && bx0 < clear.x1 && bz1 > clear.z0 && bz0 < clear.z1) continue;
+      }
       const vStart = pos.length / 3;
       let pts = b.pts as [number, number][];
       let area = 0;
