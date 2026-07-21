@@ -37,6 +37,7 @@ export class Game {
   private warn01 = 0;
   private bounceCd = 0;
   private portalCd = 0;
+  private sinking = 0; // seconds under the river; 0 = on land
 
   constructor(
     private scene: THREE.Scene,
@@ -99,6 +100,8 @@ export class Game {
     this.credits--;
     this.fuel = 100;
     this.vehicle.fuelEmpty = false;
+    this.sinking = 0;
+    this.vehicle.body.setLinearDamping(0);
     this.crash.repair();
     this.vehicle.reset(SPAWN, SPAWN_YAW);
     this.rollCheckpoints();
@@ -114,6 +117,8 @@ export class Game {
     this.credits--;
     this.fuel = 100;
     this.vehicle.fuelEmpty = false;
+    this.sinking = 0;
+    this.vehicle.body.setLinearDamping(0);
     this.crash.repair();
     // respawn on the nearest real road, heading along it
     this.vehicle.worldPosition(_v);
@@ -193,30 +198,45 @@ export class Game {
 
     this.vehicle.worldPosition(_v);
 
-    // mirror perimeter: warning grid proximity + 30%-speed rebound with fuel cost
+    // north/south mirror perimeter (east/west is the river — handled below)
     const B = BORDER;
-    const dEdge = Math.min(_v.x - B.minX, B.maxX - _v.x, _v.z - B.minZ, B.maxZ - _v.z);
+    const dEdge = Math.min(_v.z - B.minZ, B.maxZ - _v.z);
     this.warn01 = THREE.MathUtils.clamp(1 - dEdge / 140, 0, 1);
     this.bounceCd -= dt;
     if (dEdge < 0 && this.bounceCd <= 0 && !this.crash.totaled) {
       this.bounceCd = 1.2;
       const vel = this.vehicle.velocity(_v2);
-      if (_v.x < B.minX || _v.x > B.maxX) vel.x = -vel.x;
-      if (_v.z < B.minZ || _v.z > B.maxZ) vel.z = -vel.z;
+      vel.z = -vel.z;
       vel.multiplyScalar(0.3);
       if (vel.length() < 7) vel.setLength(7); // always clears the wall
       this.vehicle.body.setTranslation(
-        {
-          x: THREE.MathUtils.clamp(_v.x, B.minX + 3, B.maxX - 3),
-          y: _v.y,
-          z: THREE.MathUtils.clamp(_v.z, B.minZ + 3, B.maxZ - 3),
-        },
+        { x: _v.x, y: _v.y, z: THREE.MathUtils.clamp(_v.z, B.minZ + 3, B.maxZ - 3) },
         true
       );
       this.vehicle.body.setLinvel({ x: vel.x, y: Math.abs(vel.y) * 0.2, z: vel.z }, true);
       this.fuel = Math.max(0, this.fuel - 8);
       this.hud.popup('MIRROR PERIMETER — FUEL −8');
       this.hud.flash(0.6);
+    }
+
+    // river edges: smash the seawall fence, then you're sinking — camera stays
+    // above the surface; a few seconds under and the run is over
+    const inWater = _v.x < this.city.shoreWest(_v.z) || _v.x > this.city.shoreEast(_v.z);
+    this.vehicle.underwater = inWater;
+    if (inWater && !this.crash.totaled) {
+      if (this.sinking === 0) {
+        this.city.breakFence(_v, 12);
+        this.vehicle.body.setLinearDamping(1.6);
+        this.hud.popup('SEAWALL BREACHED');
+        this.hud.flash(0.5);
+      }
+      this.sinking += dt;
+      if (this.sinking > 2.4) {
+        this.crash.forceTotal(_v.x < 0 ? 'THE HUDSON CLAIMS ANOTHER' : 'LOST TO THE EAST RIVER');
+      }
+    } else if (this.sinking > 0 && !inWater) {
+      this.sinking = 0;
+      this.vehicle.body.setLinearDamping(0);
     }
 
     // tunnel warp: Lincoln ↔ Queens–Midtown
@@ -300,6 +320,8 @@ export class Game {
       if (this.goCountdown <= 0) {
         this.state = 'attract';
         this.goReason = null;
+        this.sinking = 0;
+        this.vehicle.body.setLinearDamping(0);
         this.crash.repair();
         this.vehicle.reset(SPAWN, SPAWN_YAW);
         this.hud.showGameOver(null, 0, 0);

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type RAPIER_API from '@dimforge/rapier3d-compat';
 import { TUNING, G_ALL, G_BUILDING, groups } from './tuning';
+import { WATER_Y } from './city';
 import type { PlayerVehicle } from './vehicle';
 import type { CrashSystem } from './crash';
 
@@ -123,6 +124,10 @@ export class ChaseCamera {
       }
     }
     if (this.smoothedPos.y < 0.4) this.smoothedPos.y = 0.4;
+    // past the seawall the camera stays locked above the surface while the car sinks
+    if (vehicle.underwater && this.smoothedPos.y < WATER_Y + 0.7) {
+      this.smoothedPos.y = WATER_Y + 0.7;
+    }
 
     // look target slightly ahead of the car
     _look.copy(_carPos).addScaledVector(_fwd, 2.2 + 4 * speed01);

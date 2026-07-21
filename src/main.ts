@@ -89,14 +89,53 @@ async function boot() {
   input.onPress('KeyP', () => panel.toggle());
 
   // ---- GM mode: collision overlay + map-discrepancy flagging ----
-  // G toggles red collider outlines; F drops a flag at the car (persists to
-  // localStorage + beacon); X copies all flags as JSON for a bug report.
+  // G toggles red collider outlines; F drops a flag (with an optional typed
+  // note) at the car; hold V to GHOST buildings by driving through them;
+  // X copies flags + ghosted buildings as JSON for a bug report.
   let gmMode = false;
   const gmPos = new THREE.Vector3();
-  const gmFlags: { x: number; z: number; near: string; t: string }[] = (() => {
+  const gmNose = new THREE.Vector3();
+  const gmFlags: { x: number; z: number; near: string; t: string; note?: string }[] = (() => {
     try { return JSON.parse(localStorage.getItem('nightrun-gm-flags') ?? '[]'); }
     catch { return []; }
   })();
+  const gmGhosts: { i: number; name?: string; x: number; z: number }[] = (() => {
+    try { return JSON.parse(localStorage.getItem('nightrun-gm-ghosts') ?? '[]'); }
+    catch { return []; }
+  })();
+  // re-apply previous sessions' deletions so the edited map stays edited
+  for (const g of gmGhosts) city.ghostBuilding(g.i);
+
+  // note box for the most recent flag: Enter saves, Esc skips; keystrokes
+  // stop-propagate so typing never drives the car
+  let noteBox: HTMLInputElement | null = null;
+  const openNoteBox = (flag: (typeof gmFlags)[number]) => {
+    if (noteBox) return;
+    const inp = document.createElement('input');
+    inp.placeholder = 'flag note — Enter saves · Esc skips';
+    inp.style.cssText = `position:fixed;left:50%;bottom:18%;transform:translateX(-50%);
+      width:min(480px,80vw);padding:10px 14px;background:rgba(8,6,14,0.92);
+      border:1px solid #58e6ff;border-radius:8px;color:#e8f6ff;z-index:60;outline:none;
+      font:14px "Avenir Next","Segoe UI",sans-serif;letter-spacing:1px;
+      box-shadow:0 0 24px rgba(88,230,255,0.25);`;
+    document.body.appendChild(inp);
+    noteBox = inp;
+    const close = (save: boolean) => {
+      if (save && inp.value.trim()) {
+        flag.note = inp.value.trim();
+        localStorage.setItem('nightrun-gm-flags', JSON.stringify(gmFlags));
+      }
+      inp.remove();
+      noteBox = null;
+    };
+    inp.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') close(true);
+      else if (e.key === 'Escape') close(false);
+    });
+    inp.addEventListener('keyup', (e) => e.stopPropagation());
+    setTimeout(() => inp.focus(), 30);
+  };
   const flagMarkers = new THREE.Group();
   scene.add(flagMarkers);
   const addFlagBeacon = (x: number, z: number) => {
@@ -115,10 +154,10 @@ async function boot() {
     gmMode = !gmMode;
     city.setDebug(gmMode);
     flagMarkers.visible = true;
-    hud.popup(gmMode ? 'GM MODE — F FLAG · X EXPORT' : 'GM MODE OFF');
+    hud.popup(gmMode ? 'GM MODE — F FLAG · HOLD V GHOSTS WALLS · X EXPORT' : 'GM MODE OFF');
   });
   input.onPress('KeyF', () => {
-    if (!gmMode) return;
+    if (!gmMode || noteBox) return;
     vehicle.worldPosition(gmPos);
     const road = nearestEdgePoint(gmPos);
     const near = EDGES[road.edge].name ?? EDGES[road.edge].cls;
@@ -131,12 +170,14 @@ async function boot() {
     addFlagBeacon(flag.x, flag.z);
     hud.popup(`FLAG #${gmFlags.length} — ${near}`.toUpperCase());
     console.log('[GM FLAG]', flag);
+    openNoteBox(flag);
   });
   input.onPress('KeyX', () => {
     if (!gmMode) return;
-    navigator.clipboard?.writeText(JSON.stringify(gmFlags, null, 2)).catch(() => {});
-    console.log('[GM FLAGS]', JSON.stringify(gmFlags, null, 2));
-    hud.popup(`${gmFlags.length} FLAGS COPIED — PASTE THEM TO CLAUDE`);
+    const report = JSON.stringify({ flags: gmFlags, ghosted: gmGhosts }, null, 2);
+    navigator.clipboard?.writeText(report).catch(() => {});
+    console.log('[GM REPORT]', report);
+    hud.popup(`${gmFlags.length} FLAGS + ${gmGhosts.length} GHOSTS COPIED — PASTE TO CLAUDE`);
   });
 
   let paused = false;
@@ -252,6 +293,21 @@ async function boot() {
     game.update(realDt, vehicle);
 
     vehicle.worldPosition(camPos);
+
+    // GM: hold V and drive through a wall to ghost that building (logged for export)
+    if (gmMode && input.has('KeyV') && game.state === 'running') {
+      vehicle.forwardDir(mapFwd);
+      gmNose.copy(camPos).addScaledVector(mapFwd, 3.2);
+      const g = city.ghostBuildingAt(gmNose, 1.6) ?? city.ghostBuildingAt(camPos, 1.2);
+      if (g) {
+        const rec = { i: g.index, name: g.name, x: Math.round(camPos.x), z: Math.round(camPos.z) };
+        gmGhosts.push(rec);
+        localStorage.setItem('nightrun-gm-ghosts', JSON.stringify(gmGhosts));
+        hud.popup(`GHOSTED ${g.name ?? '#' + g.index}`.toUpperCase());
+        console.log('[GM GHOST]', rec);
+      }
+    }
+
     minimap.update(
       game.state === 'running',
       camPos,

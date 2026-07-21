@@ -56,6 +56,10 @@ export const BORDER = {
   maxZ: EXT.maxZ + 40,
 };
 
+/** river surface height: above the (flat) driving plane, so crossing the
+ *  seawall visually puts the car UNDER the water */
+export const WATER_Y = 2.1;
+
 export interface TunnelPortal {
   name: string;
   pos: THREE.Vector3;
@@ -383,7 +387,7 @@ export class City {
     uFogColor: { value: THREE.Color };
     uFogDensity: { value: number };
   };
-  private walls: { mat: THREE.ShaderMaterial; axis: 'x' | 'z'; at: number }[] = [];
+  private walls: { mat: THREE.ShaderMaterial; cx: number; cz: number }[] = [];
   /** crosstown tunnel warp gates (Lincoln ↔ Queens–Midtown) */
   portals: TunnelPortal[] = [];
   private nsHeads!: THREE.InstancedMesh;
@@ -395,6 +399,15 @@ export class City {
   private hulls: [number, number][][] = [];
   private debugLines: THREE.LineSegments | null = null;
   private debugScene!: THREE.Scene;
+  // GM ghost-delete support: per-building collider + vertex range in the merged geometry
+  private world!: RAPIER_API.World;
+  private buildingsGeo!: THREE.BufferGeometry;
+  private bMeta: { coll: RAPIER_API.Collider; vStart: number; vCount: number; name?: string; gone: boolean }[] = [];
+  // breakable seawall fence + marched shoreline (west/east river edges)
+  private fence!: { geo: THREE.BufferGeometry; segs: { x: number; z: number; vStart: number; vCount: number; alive: boolean }[] };
+  private shoreWArr: number[] = [];
+  private shoreEArr: number[] = [];
+  private shoreDz = 14;
 
   constructor(scene: THREE.Scene, world: RAPIER_API.World, RAPIER: typeof RAPIER_API) {
     this.buildingUniforms = {
@@ -518,8 +531,63 @@ export class City {
     this.buildSkyline(scene);
     this.buildWater(scene);
     this.buildBorderWalls(scene);
+    this.buildOuterSkyline(scene);
+    this.buildShoreFence(scene);
     this.buildPortals(scene);
     this.debugScene = scene;
+  }
+
+  /** GM: permanently ghost one building — collider removed, geometry flattened */
+  ghostBuilding(i: number): { index: number; name?: string } | null {
+    const m = this.bMeta[i];
+    if (!m || m.gone) return null;
+    m.gone = true;
+    this.world.removeCollider(m.coll, true);
+    const attr = this.buildingsGeo.getAttribute('position') as THREE.BufferAttribute;
+    for (let v = m.vStart; v < m.vStart + m.vCount; v++) attr.setY(v, 0.03);
+    attr.needsUpdate = true;
+    return { index: i, name: m.name };
+  }
+
+  /** GM: ghost whatever building the given point is inside/near (hold-V drive-through) */
+  ghostBuildingAt(p: THREE.Vector3, reach = 1.4): { index: number; name?: string } | null {
+    for (let i = 0; i < this.boxes.length; i++) {
+      if (this.bMeta[i]?.gone) continue;
+      const b = this.boxes[i];
+      if (p.x > b.minX - reach && p.x < b.maxX + reach && p.z > b.minZ - reach && p.z < b.maxZ + reach) {
+        return this.ghostBuilding(i);
+      }
+    }
+    return null;
+  }
+
+  /** landside x of the west/east shoreline at a given z (from the marched DEM) */
+  shoreWest(z: number): number {
+    const k = THREE.MathUtils.clamp(Math.round((z - BORDER.minZ) / this.shoreDz), 0, this.shoreWArr.length - 1);
+    const v = this.shoreWArr[k];
+    return isFinite(v) ? v : BORDER.minX;
+  }
+  shoreEast(z: number): number {
+    const k = THREE.MathUtils.clamp(Math.round((z - BORDER.minZ) / this.shoreDz), 0, this.shoreEArr.length - 1);
+    const v = this.shoreEArr[k];
+    return isFinite(v) ? v : BORDER.maxX;
+  }
+
+  /** smash the seawall fence near a point; true if any segment broke */
+  breakFence(p: THREE.Vector3, r = 12): boolean {
+    let hit = false;
+    const attr = this.fence.geo.getAttribute('position') as THREE.BufferAttribute;
+    for (const s of this.fence.segs) {
+      if (!s.alive) continue;
+      const dx = s.x - p.x, dz = s.z - p.z;
+      if (dx * dx + dz * dz < r * r) {
+        s.alive = false;
+        hit = true;
+        for (let v = s.vStart; v < s.vStart + s.vCount; v++) attr.setXYZ(v, 0, -5, 0);
+      }
+    }
+    if (hit) attr.needsUpdate = true;
+    return hit;
   }
 
   /** GM mode: red curb-level outlines of the ACTUAL physics colliders, so
@@ -599,9 +667,9 @@ export class City {
           if (water < 0.03) discard;
           vec2 p = vWorldPos.xz;
           // drifting wave grid: two warped line families + a long swell
-          float swell = sin(p.x * 0.012 + uTime * 0.7) * sin(p.z * 0.015 - uTime * 0.55);
-          float gx = abs(fract(p.x * 0.035 + 0.14 * sin(p.z * 0.045 + uTime * 0.8)) - 0.5);
-          float gz = abs(fract(p.z * 0.035 + 0.14 * sin(p.x * 0.045 + uTime * 0.65)) - 0.5);
+          float swell = sin(p.x * 0.012 + uTime * 0.7) * sin(p.y * 0.015 - uTime * 0.55);
+          float gx = abs(fract(p.x * 0.035 + 0.14 * sin(p.y * 0.045 + uTime * 0.8)) - 0.5);
+          float gz = abs(fract(p.y * 0.035 + 0.14 * sin(p.x * 0.045 + uTime * 0.65)) - 0.5);
           float line = max(smoothstep(0.10, 0.0, gx), smoothstep(0.10, 0.0, gz));
           vec3 col = vec3(0.008, 0.020, 0.045)
             + vec3(0.05, 0.24, 0.42) * line * (0.45 + 0.55 * swell)
@@ -614,21 +682,28 @@ export class City {
     });
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
     mesh.rotation.x = -Math.PI / 2;
-    mesh.position.y = 0.1;
+    mesh.position.y = WATER_Y; // above the flat driving plane: cars can go UNDER
     mesh.frustumCulled = false;
     scene.add(mesh);
   }
 
-  /** mirror-perimeter warning grid: pulses in as the player approaches */
+  /** north/south: the last row of buildings is the natural barrier — only the
+   *  avenue gaps get pulsing blockade panels at the border line */
   private buildBorderWalls(scene: THREE.Scene) {
-    const H = 26;
-    const defs = [
-      { axis: 'z' as const, at: BORDER.maxZ, cx: (BORDER.minX + BORDER.maxX) / 2, cz: BORDER.maxZ, rot: 0, len: BORDER.maxX - BORDER.minX + 140 },
-      { axis: 'z' as const, at: BORDER.minZ, cx: (BORDER.minX + BORDER.maxX) / 2, cz: BORDER.minZ, rot: Math.PI, len: BORDER.maxX - BORDER.minX + 140 },
-      { axis: 'x' as const, at: BORDER.maxX, cx: BORDER.maxX, cz: (BORDER.minZ + BORDER.maxZ) / 2, rot: -Math.PI / 2, len: BORDER.maxZ - BORDER.minZ + 140 },
-      { axis: 'x' as const, at: BORDER.minX, cx: BORDER.minX, cz: (BORDER.minZ + BORDER.maxZ) / 2, rot: Math.PI / 2, len: BORDER.maxZ - BORDER.minZ + 140 },
-    ];
-    for (const d of defs) {
+    const H = 11;
+    const spots: { x: number; z: number; w: number }[] = [];
+    for (const at of [BORDER.minZ, BORDER.maxZ]) {
+      for (const e of EDGES) {
+        for (const end of [e.pts[0], e.pts[e.pts.length - 1]]) {
+          if (Math.abs(end[1] - at) > 70) continue;
+          const x = end[0];
+          if (x < BORDER.minX + 25 || x > BORDER.maxX - 25) continue;
+          if (spots.some((s) => Math.abs(s.x - x) < 16 && Math.abs(s.z - at) < 90)) continue;
+          spots.push({ x, z: at + (at > 0 ? -6 : 6), w: e.w + 14 });
+        }
+      }
+    }
+    for (const d of spots) {
       const mat = new THREE.ShaderMaterial({
         uniforms: { uOp: { value: 0 }, uTime: { value: 0 } },
         transparent: true,
@@ -655,13 +730,143 @@ export class City {
             gl_FragColor = vec4(vec3(1.0, 0.16, 0.22) * (0.4 + line), a);
           }`,
       });
-      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(d.len, H), mat);
-      mesh.position.set(d.cx, H / 2, d.cz);
-      mesh.rotation.y = d.rot;
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(d.w, H), mat);
+      mesh.position.set(d.x, H / 2, d.z);
       mesh.frustumCulled = false;
       scene.add(mesh);
-      this.walls.push({ mat, axis: d.axis, at: d.at });
+      this.walls.push({ mat, cx: d.x, cz: d.z });
     }
+  }
+
+  /** placeholder city beyond the north/south borders: two rows of dark towers
+   *  so the uptown/downtown views read as "Manhattan keeps going" (scenery only) */
+  private buildOuterSkyline(scene: THREE.Scene) {
+    const boxes: { x: number; z: number; w: number; d: number; h: number }[] = [];
+    for (const side of [-1, 1]) {
+      const at = side < 0 ? BORDER.minZ : BORDER.maxZ;
+      for (let row = 0; row < 2; row++) {
+        const zc = at + side * (75 + row * 115);
+        let x = BORDER.minX + 50;
+        while (x < BORDER.maxX - 50) {
+          const w = rand(26, 52);
+          boxes.push({ x: x + w / 2, z: zc + rand(-22, 22), w, d: rand(32, 66), h: rand(16, 62) + row * 22 });
+          x += w + rand(24, 52);
+        }
+      }
+    }
+    const fill = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0x04050a }),
+      boxes.length
+    );
+    const m4 = new THREE.Matrix4();
+    const lpos: number[] = [];
+    for (let i = 0; i < boxes.length; i++) {
+      const b = boxes[i];
+      m4.makeScale(b.w, b.h, b.d).setPosition(b.x, b.h / 2, b.z);
+      fill.setMatrixAt(i, m4);
+      // vertical + roof edge lines only (silhouette wireframe, half the verts)
+      const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2;
+      const z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
+      for (const [ex, ez] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]] as [number, number][]) {
+        lpos.push(ex, 0, ez, ex, b.h, ez);
+      }
+      lpos.push(x0, b.h, z0, x1, b.h, z0, x1, b.h, z0, x1, b.h, z1);
+      lpos.push(x1, b.h, z1, x0, b.h, z1, x0, b.h, z1, x0, b.h, z0);
+    }
+    fill.instanceMatrix.needsUpdate = true;
+    scene.add(fill);
+    const lgeo = new THREE.BufferGeometry();
+    lgeo.setAttribute('position', new THREE.Float32BufferAttribute(lpos, 3));
+    const lines = new THREE.LineSegments(
+      lgeo,
+      new THREE.LineBasicMaterial({ color: 0x16404e, transparent: true, opacity: 0.55 })
+    );
+    scene.add(lines);
+  }
+
+  /** breakable amber fence along the marched real shoreline (both rivers) */
+  private buildShoreFence(scene: THREE.Scene) {
+    const step = this.shoreDz;
+    // DEM march (west margin is pier-smeared, so its threshold is looser)…
+    const march = (dir: -1 | 1, thresh: number): number[] => {
+      const arr: number[] = [];
+      for (let z = BORDER.minZ; z <= BORDER.maxZ; z += step) {
+        let found = NaN;
+        for (let x = dir < 0 ? -1250 : 1150; dir < 0 ? x > BORDER.minX : x < BORDER.maxX; x += dir * 6) {
+          if (elevationAt(x, z) < thresh) { found = x - dir * 5; break; }
+        }
+        arr.push(found);
+      }
+      return arr;
+    };
+    const mW = march(-1, 2.45);
+    const mE = march(1, 1.2);
+    // …anchored by the outermost real road per z-band (the shoreline highways):
+    // the fence always sits just past the last drivable ribbon, never on it
+    const bins = mW.length;
+    const wRoad = new Array<number>(bins).fill(Infinity);
+    const eRoad = new Array<number>(bins).fill(-Infinity);
+    for (const e of EDGES) {
+      for (const p of e.pts) {
+        const k0 = Math.round((p[1] - BORDER.minZ) / step);
+        // splat into a 5-band window so sparse corner bands still get anchored
+        for (let k = k0 - 2; k <= k0 + 2; k++) {
+          if (k < 0 || k >= bins) continue;
+          if (p[0] < wRoad[k]) wRoad[k] = p[0];
+          if (p[0] > eRoad[k]) eRoad[k] = p[0];
+        }
+      }
+    }
+    // fill road-anchor gaps from neighbors, combine, then 3-tap smooth
+    for (let k = 0; k < bins; k++) {
+      if (!isFinite(wRoad[k])) wRoad[k] = wRoad[k - 1] ?? -1500;
+      if (!isFinite(eRoad[k])) eRoad[k] = eRoad[k - 1] ?? 1400;
+    }
+    const combine = (dem: number[], road: number[], dir: -1 | 1): number[] => {
+      const out = new Array<number>(bins);
+      for (let k = 0; k < bins; k++) {
+        const anchor = road[k] + dir * 26;
+        const d = dem[k];
+        out[k] = dir < 0
+          ? Math.max(BORDER.minX + 12, Math.min(isFinite(d) ? d : Infinity, anchor))
+          : Math.min(BORDER.maxX - 12, Math.max(isFinite(d) ? d : -Infinity, anchor));
+      }
+      for (let k = 1; k < bins - 1; k++) out[k] = (out[k - 1] + out[k] + out[k + 1]) / 3;
+      return out;
+    };
+    this.shoreWArr = combine(mW, wRoad, -1);
+    this.shoreEArr = combine(mE, eRoad, 1);
+
+    const lpos: number[] = [];
+    const segs: { x: number; z: number; vStart: number; vCount: number; alive: boolean }[] = [];
+    const addSide = (arr: number[]) => {
+      for (let k = 0; k < arr.length - 1; k++) {
+        const x1 = arr[k], x2 = arr[k + 1];
+        if (!isFinite(x1) || !isFinite(x2) || Math.abs(x2 - x1) > 60) continue;
+        const z1 = BORDER.minZ + k * step, z2 = z1 + step;
+        const vStart = lpos.length / 3;
+        lpos.push(x1, 0.55, z1, x2, 0.55, z2);
+        lpos.push(x1, 1.15, z1, x2, 1.15, z2);
+        lpos.push(x1, 0, z1, x1, 1.35, z1);
+        segs.push({ x: (x1 + x2) / 2, z: (z1 + z2) / 2, vStart, vCount: lpos.length / 3 - vStart, alive: true });
+      }
+    };
+    addSide(this.shoreWArr);
+    addSide(this.shoreEArr);
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(lpos, 3));
+    const lines = new THREE.LineSegments(
+      geo,
+      new THREE.LineBasicMaterial({
+        color: 0xffb347, transparent: true, opacity: 0.8,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      })
+    );
+    lines.frustumCulled = false;
+    scene.add(lines);
+    this.fence = { geo, segs };
   }
 
   /** glowing crosstown warp gates at the real tunnel mouths */
@@ -837,8 +1042,10 @@ export class City {
     const v2: THREE.Vector2[] = [];
 
     const wallBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    this.world = world;
 
     for (const b of DATA.buildings) {
+      const vStart = pos.length / 3;
       let pts = b.pts as [number, number][];
       let area = 0;
       for (let i = 0; i < pts.length; i++) {
@@ -882,14 +1089,9 @@ export class City {
       // for rotated/L-shaped buildings off the grid)
       let desc: RAPIER_API.ColliderDesc;
       if ((b as any).exact) {
-        // exact trimesh: triangulate the footprint bottom+top, connect sides
-        const tris2d: [number, number, number][] = [];
-        if (pts.length >= 3) {
-          // simple fan triangulation from first point
-          for (let i = 1; i < pts.length - 1; i++) {
-            tris2d.push([0, i, i + 1]);
-          }
-        }
+        // WALLS-ONLY trimesh following the exact (possibly concave) footprint.
+        // No top/bottom faces: a fan over a concave outline creates ground-level
+        // triangles that poke into the street — the phantom walls we're killing.
         const nv = pts.length;
         const verts = new Float32Array(nv * 2 * 3);
         for (let i = 0; i < nv; i++) {
@@ -897,12 +1099,6 @@ export class City {
           verts.set([pts[i][0], h, pts[i][1]], (nv + i) * 3);
         }
         const indices: number[] = [];
-        // bottom and top faces
-        for (const [a, b, c] of tris2d) {
-          indices.push(a, b, c);
-          indices.push(nv + c, nv + b, nv + a);
-        }
-        // side walls
         for (let i = 0; i < nv; i++) {
           const j = (i + 1) % nv;
           indices.push(i, j, nv + i, j, nv + j, nv + i);
@@ -926,6 +1122,10 @@ export class City {
       coll.setCollisionGroups(groups(G_BUILDING, G_ALL));
       coll.setFriction(0.4);
       this.boxes.push({ minX, maxX, minZ, maxZ, h });
+      this.bMeta.push({
+        coll, vStart, vCount: pos.length / 3 - vStart,
+        name: (b as { name?: string }).name, gone: false,
+      });
     }
 
     const geo = new THREE.BufferGeometry();
@@ -933,6 +1133,7 @@ export class City {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
     geo.setAttribute('aSeed', new THREE.Float32BufferAttribute(seed, 1));
     geo.setIndex(idx);
+    this.buildingsGeo = geo;
     const mat = new THREE.ShaderMaterial({
       vertexShader: BUILDING_VERT,
       fragmentShader: BUILDING_FRAG,
@@ -1225,8 +1426,8 @@ export class City {
     this.waterUniforms.uLightning.value = lightning01;
     if (playerPos) {
       for (const w of this.walls) {
-        const d = w.axis === 'x' ? Math.abs(w.at - playerPos.x) : Math.abs(w.at - playerPos.z);
-        w.mat.uniforms.uOp.value = Math.pow(THREE.MathUtils.clamp(1 - d / 150, 0, 1), 1.6);
+        const d = Math.hypot(w.cx - playerPos.x, w.cz - playerPos.z);
+        w.mat.uniforms.uOp.value = Math.pow(THREE.MathUtils.clamp(1 - d / 130, 0, 1), 1.5);
         w.mat.uniforms.uTime.value = time;
       }
     }

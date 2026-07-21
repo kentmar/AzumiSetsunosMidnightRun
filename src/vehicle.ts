@@ -38,6 +38,8 @@ export class PlayerVehicle {
   disabled = false;
   /** set true when fuel runs out — engine dead, everything else works */
   fuelEmpty = false;
+  /** set by Game while past the seawall — camera locks above the surface */
+  underwater = false;
 
   prevPos = new THREE.Vector3();
   currPos = new THREE.Vector3();
