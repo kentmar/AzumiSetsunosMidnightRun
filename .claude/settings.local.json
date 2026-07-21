@@ -20,7 +20,8 @@
       "Bash(node /private/tmp/claude-501/-Users-kentmarllc-Desktop-Azumi-Setsuno-Webgame/7773c9fe-9aa0-474d-9753-64811be6536d/scratchpad/concave-threshold.mjs)",
       "Bash(grep -n \"\\\\.buildings\" /Users/kentmarllc/Desktop/Azumi Setsuno Webgame/scripts/bake-osm.mjs | head -5)",
       "Bash(node /private/tmp/claude-501/-Users-kentmarllc-Desktop-Azumi-Setsuno-Webgame/7773c9fe-9aa0-474d-9753-64811be6536d/scratchpad/west-shore-probe.mjs)",
-      "Bash(git commit -q -m ' *)"
+      "Bash(git commit -q -m ' *)",
+      "Bash(node -e ' *)"
     ]
   }
 }

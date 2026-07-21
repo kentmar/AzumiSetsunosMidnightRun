@@ -262,6 +262,9 @@ for (const el of bData.elements) {
   }
   h = Math.min(h, 450);
   const name = el.tags.name;
+  // GM-verified drops: subway-station polygons drawn over open plazas —
+  // they read as solid buildings but block real drivable space
+  if (name && /^34th Street–Herald Square$/.test(name)) continue;
   buildings.push({ pts, h: r1(h), s: r1(Math.random() * 100), area, ...(name ? { name } : {}) });
 }
 buildings.sort((a, b) => b.area * b.h - a.area * a.h);

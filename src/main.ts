@@ -104,7 +104,8 @@ async function boot() {
     catch { return []; }
   })();
   // re-apply previous sessions' deletions so the edited map stays edited
-  for (const g of gmGhosts) city.ghostBuilding(g.i);
+  // (skipped automatically if a re-bake shifted that index to a different building)
+  for (const g of gmGhosts) city.ghostIfMatches(g.i, g.name, g.x, g.z);
 
   // note box for the most recent flag: Enter saves, Esc skips; keystrokes
   // stop-propagate so typing never drives the car
