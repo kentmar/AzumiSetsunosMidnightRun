@@ -877,23 +877,55 @@ export class City {
       }
       for (const t of tris) idx.push(roofBase + t[0], roofBase + t[2], roofBase + t[1]);
 
-      // convex hull of the real footprint — an AABB here bulges into streets
-      // wherever the footprint is rotated or L-shaped (everything off-grid)
-      const hull = convexHull2D(pts);
-      const verts = new Float32Array(hull.length * 2 * 3);
-      hull.forEach(([hx, hz], k) => {
-        verts.set([hx, 0, hz], k * 6);
-        verts.set([hx, h, hz], k * 6 + 3);
-      });
-      const desc =
-        RAPIER.ColliderDesc.convexHull(verts) ??
-        RAPIER.ColliderDesc.cuboid((maxX - minX) / 2, h / 2, (maxZ - minZ) / 2)
-          .setTranslation((minX + maxX) / 2, h / 2, (minZ + maxZ) / 2);
+      // exact trimesh for buildings with concave footprints (courtyard/L-shape);
+      // convex hull for the rest (convex hulls are cheaper but bulge into streets
+      // for rotated/L-shaped buildings off the grid)
+      let desc: RAPIER_API.ColliderDesc;
+      if ((b as any).exact) {
+        // exact trimesh: triangulate the footprint bottom+top, connect sides
+        const tris2d: [number, number, number][] = [];
+        if (pts.length >= 3) {
+          // simple fan triangulation from first point
+          for (let i = 1; i < pts.length - 1; i++) {
+            tris2d.push([0, i, i + 1]);
+          }
+        }
+        const nv = pts.length;
+        const verts = new Float32Array(nv * 2 * 3);
+        for (let i = 0; i < nv; i++) {
+          verts.set([pts[i][0], 0, pts[i][1]], i * 3);
+          verts.set([pts[i][0], h, pts[i][1]], (nv + i) * 3);
+        }
+        const indices: number[] = [];
+        // bottom and top faces
+        for (const [a, b, c] of tris2d) {
+          indices.push(a, b, c);
+          indices.push(nv + c, nv + b, nv + a);
+        }
+        // side walls
+        for (let i = 0; i < nv; i++) {
+          const j = (i + 1) % nv;
+          indices.push(i, j, nv + i, j, nv + j, nv + i);
+        }
+        desc = RAPIER.ColliderDesc.trimesh(verts, new Uint32Array(indices));
+      } else {
+        // convex hull (fast, used for most buildings)
+        const hull = convexHull2D(pts);
+        const verts = new Float32Array(hull.length * 2 * 3);
+        hull.forEach(([hx, hz], k) => {
+          verts.set([hx, 0, hz], k * 6);
+          verts.set([hx, h, hz], k * 6 + 3);
+        });
+        desc =
+          RAPIER.ColliderDesc.convexHull(verts) ??
+          RAPIER.ColliderDesc.cuboid((maxX - minX) / 2, h / 2, (maxZ - minZ) / 2)
+            .setTranslation((minX + maxX) / 2, h / 2, (minZ + maxZ) / 2);
+        this.hulls.push(hull);
+      }
       const coll = world.createCollider(desc, wallBody);
       coll.setCollisionGroups(groups(G_BUILDING, G_ALL));
       coll.setFriction(0.4);
       this.boxes.push({ minX, maxX, minZ, maxZ, h });
-      this.hulls.push(hull);
     }
 
     const geo = new THREE.BufferGeometry();

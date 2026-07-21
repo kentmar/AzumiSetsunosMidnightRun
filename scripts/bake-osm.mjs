@@ -29,6 +29,10 @@ const ROAD_CLASSES = {
   unclassified: { w: 13, major: false },
 };
 
+// Buildings with concave footprints (ratio > 1.30): use exact trimesh colliders
+// to avoid convex-hull overfill that causes phantom walls. Index into buildings[].
+const TRIMESH_BUILDINGS = new Set([6, 15, 26, 27, 36, 46, 56, 64, 82, 95, 102, 142, 158, 171, 174, 176, 177, 184, 196, 203, 227, 232, 266, 271, 273, 343, 356, 360, 366, 371, 412, 416, 435, 436, 439, 444, 445, 456, 458, 468, 504, 506, 544, 552, 553, 554, 613, 782, 806, 811, 828, 848, 853, 855, 881, 909, 928, 947, 1013, 1057, 1062, 1104, 1141, 1237, 1249, 1286, 1486, 1501, 1502, 1555, 1568, 1635, 1661, 1675, 1727, 1747, 1782, 1848, 1875, 1882, 1918, 1921, 1977, 2321]);
+
 // three.js is right-handed: with +x = east, north must map to -z, otherwise
 // the whole world renders as a mirror image of real Manhattan (east on your
 // left when driving uptown). Avenues run along -z (uptown).
@@ -261,8 +265,12 @@ for (const el of bData.elements) {
 }
 buildings.sort((a, b) => b.area * b.h - a.area * a.h);
 buildings = buildings.slice(0, 2400);
-for (const b of buildings) delete b.area;
-console.log('buildings kept:', buildings.length);
+for (let i = 0; i < buildings.length; i++) {
+  const b = buildings[i];
+  delete b.area;
+  if (TRIMESH_BUILDINGS.has(i)) b.exact = 1; // mark for trimesh collider in physics
+}
+console.log('buildings kept:', buildings.length, 'exact colliders:', buildings.filter(b => b.exact).length);
 
 // ---------------- road graph ----------------
 const sNodes = indexNodes(sData);
