@@ -1136,9 +1136,11 @@ export class City {
         body
       );
       openW.setCollisionGroups(groups(G_BUILDING, G_ALL));
+      // must stay strictly BELOW the roadway: at full height these become an
+      // invisible wall along the whole bore that surface traffic slams into
       const deepW = world.createCollider(
-        RAPIER.ColliderDesc.cuboid((LEN - COVER) / 2, 8, 0.4)
-          .setTranslation(mouthX + dir * ((COVER + LEN) / 2), -1.5, zSide),
+        RAPIER.ColliderDesc.cuboid((LEN - COVER) / 2, 4.05, 0.4)
+          .setTranslation(mouthX + dir * ((COVER + LEN) / 2), -4.45, zSide),
         body
       );
       deepW.setCollisionGroups(groups(G_BUILDING, G_ALL));
