@@ -545,6 +545,24 @@ export class City {
     // where the Lincoln ramp drops below street level (rest of the bore is
     // simply beneath the slab, so no hole needed there)
     this.portals = findTunnelPortals();
+    // line each bore up with the real cross-street it belongs to, so the mouth
+    // sits ON the road rather than beside it (Lincoln -> West 38th Street)
+    for (const p of this.portals) {
+      let best: { z: number; d: number } | null = null;
+      for (const e of EDGES) {
+        if (!e.name) continue;
+        for (let k = 1; k < e.pts.length; k++) {
+          const a = e.pts[k - 1], b = e.pts[k];
+          const dx = b[0] - a[0], dz = b[1] - a[1];
+          if (Math.abs(dx) < 1 || Math.abs(dz / dx) > 0.2) continue; // must run with the bore axis
+          if (p.pos.x < Math.min(a[0], b[0]) - 30 || p.pos.x > Math.max(a[0], b[0]) + 30) continue;
+          const z = a[1] + dz * ((p.pos.x - a[0]) / dx);
+          const d = Math.abs(z - p.pos.z);
+          if (d < 70 && (!best || d < best.d)) best = { z, d };
+        }
+      }
+      if (best) p.pos.z = best.z;
+    }
     for (const p of this.portals) {
       const dir = /LINCOLN/.test(p.name) ? -1 : 1; // Lincoln bores west, Queens east
       p.dir = dir;
@@ -1262,6 +1280,11 @@ export class City {
         px1 = x1; pz1 = z1; px2 = x2; pz2 = z2;
       }
       for (let k = 0; k < e.pts.length - 1; k++) {
+        // don't pave over a tunnel's open cut — the street has to end at the
+        // portal, not float across the trench
+        const mx = (e.pts[k][0] + e.pts[k + 1][0]) / 2;
+        const mz = (e.pts[k][1] + e.pts[k + 1][1]) / 2;
+        if (this.tunnelHoles.some((h) => mx > h.x0 && mx < h.x1 && mz > h.z0 - 3 && mz < h.z1 + 3)) continue;
         const v = base + k * 2;
         idx.push(v, v + 1, v + 2, v + 1, v + 3, v + 2);
       }
