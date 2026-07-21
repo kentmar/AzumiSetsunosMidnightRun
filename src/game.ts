@@ -48,9 +48,12 @@ export class Game {
     input: Input
   ) {
     // checkpoint ring + sky beacon
+    // blue wireframe sphere you drive through (2× the old ring)
     this.ring = new THREE.Mesh(
-      new THREE.TorusGeometry(4.2, 0.35, 10, 40),
-      new THREE.MeshBasicMaterial({ color: 0x3d9bff, transparent: true, opacity: 0.95 })
+      new THREE.SphereGeometry(8.4, 18, 12),
+      new THREE.MeshBasicMaterial({
+        color: 0x3d9bff, wireframe: true, transparent: true, opacity: 0.8,
+      })
     );
     this.ring.visible = false;
     scene.add(this.ring);
@@ -88,7 +91,16 @@ export class Game {
       if (this.state === 'running') this.hud.popup('CREDIT +1');
     });
     input.onPress('KeyR', () => {
-      if (this.state === 'running') this.vehicle.rescue();
+      if (this.state !== 'running') return;
+      // the surface rescue just nudges you upward, which strands you inside a
+      // tunnel — put the car back on the bore centreline facing the exit
+      this.vehicle.worldPosition(_v);
+      const t = this.city.tunnelRescue(_v);
+      if (t) {
+        this.vehicle.reset(t.pos, t.yaw);
+        this.onRespawn?.();
+        this.hud.popup('TUNNEL RESCUE');
+      } else this.vehicle.rescue();
     });
 
     this.hud.setCredits(this.credits);
@@ -172,13 +184,10 @@ export class Game {
   private pointRingAtCurrent() {
     const t = this.cpTargets[this.cpIndex];
     if (!t) return;
-    this.ring.position.set(t.x, 3.2, t.z);
+    this.ring.position.set(t.x, 5.0, t.z);
     this.beacon.position.set(t.x, 130, t.z);
     this.ring.visible = true;
     this.beacon.visible = true;
-    // face the player's current position so approach reads well
-    this.vehicle.worldPosition(_v);
-    this.ring.lookAt(_v.x, 3.2, _v.z);
   }
 
   fixedUpdate(dt: number) {
@@ -221,7 +230,10 @@ export class Game {
 
     // river edges: smash the seawall fence, then you're sinking — camera stays
     // above the surface; a few seconds under and the run is over
-    const inWater = _v.x < this.city.shoreWest(_v.z) || _v.x > this.city.shoreEast(_v.z);
+    // only at street level — the tunnels run out under the river, and being
+    // below the riverbed is not the same as being in it
+    const inWater = _v.y > -2 &&
+      (_v.x < this.city.shoreWest(_v.z) || _v.x > this.city.shoreEast(_v.z));
     this.vehicle.underwater = inWater;
     if (inWater && !this.crash.totaled) {
       if (this.sinking === 0) {
@@ -251,7 +263,9 @@ export class Game {
           const speed = Math.max(10, this.vehicle.speed * 0.85);
           const ex = Math.sin(other.exitYaw);
           const ez = Math.cos(other.exitYaw);
-          this.vehicle.reset(_v2.set(other.pos.x + ex * 12, 0, other.pos.z + ez * 12), other.exitYaw);
+          // the light wall delivers you to the OTHER tunnel's street mouth
+          const dest = other.mouth ?? other.pos;
+          this.vehicle.reset(_v2.set(dest.x + ex * 12, 0, dest.z + ez * 12), other.exitYaw);
           this.vehicle.body.setLinvel({ x: ex * speed, y: 0, z: ez * speed }, true);
           this.portalCd = 4;
           this.hud.popup(`${p.name} → ${other.name}`);
@@ -267,7 +281,7 @@ export class Game {
     if (cp && !this.crash.totaled) {
       const dx = _v.x - cp.x;
       const dz = _v.z - cp.z;
-      if (dx * dx + dz * dz < 33) {
+      if (dx * dx + dz * dz < 72) {
         this.cpIndex++;
         this.hud.setCheckpoints(this.cpIndex, this.cpTargets.length);
         if (this.cpIndex >= this.cpTargets.length) {
@@ -300,7 +314,7 @@ export class Game {
   /** real-time (unscaled) per-frame update */
   update(dt: number, mphSource: PlayerVehicle) {
     // spinny bits
-    this.ring.rotation.z += dt * 1.2;
+    this.ring.rotation.y += dt * 0.5;
     const bob = Math.sin(performance.now() * 0.004) * 0.15;
     for (const can of this.gasCans) {
       can.mesh.rotation.y += dt * 2;
