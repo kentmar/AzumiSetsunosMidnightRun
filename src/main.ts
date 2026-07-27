@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import * as RAPIER from '@dimforge/rapier3d-compat';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { setCarTemplate } from './carModel';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -84,6 +87,22 @@ async function boot() {
   hud.setDataStamp(
     `REAL MIDTOWN MANHATTAN 1:1 — MAP DATA © ${META.source.toUpperCase()} — BAKED ${META.baked} (npm run bake to refresh)`
   );
+
+  // hero car: draco-compressed '88 Supra (370KB); wireframe-restyled on load,
+  // procedural car remains the fallback if the file is missing
+  {
+    const draco = new DRACOLoader().setDecoderPath('draco/');
+    new GLTFLoader().setDRACOLoader(draco).load(
+      'models/supra.glb',
+      (gltf) => {
+        setCarTemplate(gltf.scene);
+        crash.repair(); // rebuilds the visual from the new template
+        draco.dispose();
+      },
+      undefined,
+      () => draco.dispose() // keep the procedural car on any load error
+    );
+  }
 
   const panel = new Panel(() => vehicle.applyTuning());
   input.onPress('KeyP', () => panel.toggle());

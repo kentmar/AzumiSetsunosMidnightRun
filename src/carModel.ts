@@ -135,10 +135,20 @@ function buildFromTemplate(scene: THREE.Scene, template: THREE.Group): CarModel 
   const group = new THREE.Group();
   const car = template.clone(true);
 
-  // find wheels + body in the clone
+  // find wheels + body in the clone; a multi-material glTF 'body' imports as a
+  // group of one mesh per primitive — take the biggest as the crumple shell
   const wheelNames = ['wheel_fl', 'wheel_fr', 'wheel_rl', 'wheel_rr'];
   const wheelNodes = wheelNames.map((n) => car.getObjectByName(n) ?? null);
-  const bodyMesh = car.getObjectByName('body') as THREE.Mesh | null;
+  const bodyRoot = car.getObjectByName('body');
+  let bodyMesh: THREE.Mesh | null = null;
+  bodyRoot?.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const count = (m.geometry as THREE.BufferGeometry).attributes.position.count;
+    if (!bodyMesh || count > (bodyMesh.geometry as THREE.BufferGeometry).attributes.position.count) {
+      bodyMesh = m;
+    }
+  });
 
   // face +z: front wheels must have z > 0
   car.updateMatrixWorld(true);
@@ -160,20 +170,26 @@ function buildFromTemplate(scene: THREE.Scene, template: THREE.Group): CarModel 
     .multiplyScalar(0.25);
   const wheelRadius = Math.max(0.28, Math.min(0.4, center.y > 0.05 ? center.y : 0.33));
 
-  // recolor body paint, brighten reflections
+  // hidden-line restyle: every material becomes a near-black fill + glowing
+  // edges, role-matched by the source material's name
+  const off = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
   car.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh) return;
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    for (const m of mats) {
-      const std = m as THREE.MeshStandardMaterial;
-      if (std.name === 'Body_Color') {
-        std.color = new THREE.Color(BODY_COLOR);
-        std.envMapIntensity = 1.3;
-        std.metalness = 0.8;
-        std.roughness = 0.28;
-      }
-    }
+    const src = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+    const name = (src?.name ?? '').toLowerCase();
+    let fill = 0x0b0b10, edge = 0x8a9aad, edgeOp = 0.3, emissive = 0;
+    if (/car_paint/.test(name)) { fill = 0x170a06; edge = EDGE_COLOR; edgeOp = 0.95; }
+    else if (/window/.test(name)) { fill = 0x040609; edge = 0x58e6ff; edgeOp = 0.5; }
+    else if (/tire/.test(name)) { fill = 0x101014; edge = 0x39424e; edgeOp = 0.45; }
+    else if (/rim|chrome|mirror/.test(name)) { fill = 0x15151c; edge = 0xb9c6d6; edgeOp = 0.5; }
+    else if (/back_light/.test(name)) { fill = 0x1a0406; emissive = 0xff1a1a; edge = 0xff5566; edgeOp = 0.6; }
+    else if (/headlight|lamp/.test(name)) { fill = 0x171512; emissive = 0xfff2cc; edge = 0xffe9b0; edgeOp = 0.6; }
+    mesh.material = new THREE.MeshStandardMaterial({
+      color: fill, metalness: 0.4, roughness: 0.6, ...off,
+      ...(emissive ? { emissive, emissiveIntensity: 1.1 } : {}),
+    });
+    addEdgeLines(mesh, edge, edgeOp);
   });
 
   // wheel rigs at physics hardpoints; reparent glTF wheels into them recentered
@@ -200,10 +216,12 @@ function buildFromTemplate(scene: THREE.Scene, template: THREE.Group): CarModel 
   group.add(car);
 
   // shell for crumple: clone geometry so the shared template stays pristine
+  // (cast: TS can't see the traverse-callback assignment above)
+  const crumpleSrc = bodyMesh as THREE.Mesh | null;
   let shell: THREE.Mesh;
-  if (bodyMesh) {
-    bodyMesh.geometry = bodyMesh.geometry.clone();
-    shell = bodyMesh;
+  if (crumpleSrc) {
+    crumpleSrc.geometry = crumpleSrc.geometry.clone();
+    shell = crumpleSrc;
   } else {
     shell = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.5, 4.2), new THREE.MeshStandardMaterial());
     shell.visible = false;
