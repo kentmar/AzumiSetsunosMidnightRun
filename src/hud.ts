@@ -15,17 +15,28 @@ function el(parent: HTMLElement, style: string, html = ''): HTMLDivElement {
   return d;
 }
 
-const BAR_WRAP = (w: number) => `
-  width:${w}px;height:14px;border:1px solid rgba(255,255,255,0.35);
-  background:rgba(0,0,0,0.45);padding:2px;box-sizing:border-box;`;
+const DIM = 'rgba(255,255,255,0.20)';
+
+/** corner-bracket frame, the motif that ties the whole cluster together */
+function brackets(host: HTMLElement, color: string, size = 6) {
+  // only promote static elements — absolutely-positioned hosts must keep theirs
+  if (!host.style.position) host.style.position = 'relative';
+  const mk = (css: string) => {
+    const d = document.createElement('div');
+    d.style.cssText = `position:absolute;width:${size}px;height:${size}px;${css}`;
+    host.appendChild(d);
+  };
+  mk(`left:0;top:0;border-left:1px solid ${color};border-top:1px solid ${color};`);
+  mk(`right:0;top:0;border-right:1px solid ${color};border-top:1px solid ${color};`);
+  mk(`left:0;bottom:0;border-left:1px solid ${color};border-bottom:1px solid ${color};`);
+  mk(`right:0;bottom:0;border-right:1px solid ${color};border-bottom:1px solid ${color};`);
+}
 
 export class Hud {
   root: HTMLDivElement;
   private mph: HTMLDivElement;
   private gear: HTMLDivElement;
-  private fuelFill: HTMLDivElement;
   private fuelLabel: HTMLDivElement;
-  private healthFill: HTMLDivElement;
   private credits: HTMLDivElement;
   private checkpoints: HTMLDivElement;
   private warning: HTMLDivElement;
@@ -36,10 +47,20 @@ export class Hud {
   private goReason: HTMLDivElement;
   private goPrompt: HTMLDivElement;
   private fpsEl: HTMLDivElement;
-  private tachBox!: HTMLDivElement;
-  private tachNeedle!: SVGLineElement;
-  private tachGear!: SVGTextElement;
   private odo!: HTMLDivElement;
+  private cluster!: HTMLDivElement;
+  private fuelGauge!: SVGLineElement[];
+  private revGauge!: SVGLineElement[];
+  private fuelReadout!: HTMLDivElement;
+  private revReadout!: HTMLDivElement;
+  private healthSegs!: HTMLDivElement[];
+  private driveSummary!: HTMLDivElement;
+  private dsTrip!: HTMLDivElement;
+  private dsOdo!: HTMLDivElement;
+  private dsTime!: HTMLDivElement;
+  private compassRing!: SVGGElement;
+  private compassLabel!: SVGTextElement;
+  private runSeconds = 0;
   private popupT = 0;
 
   constructor() {
@@ -52,37 +73,86 @@ export class Hud {
     el(this.root, `position:absolute;inset:0;background:radial-gradient(ellipse at center,
       transparent 55%, rgba(0,0,0,0.5) 100%);`);
 
-    // speed block, bottom-left
-    const speedBox = el(this.root, `position:absolute;left:34px;bottom:26px;
-      border-left:3px solid ${AMBER};padding-left:14px;text-shadow:0 0 12px rgba(255,150,40,0.6);`);
-    this.speedBox = speedBox;
-    this.mph = el(speedBox, `font-size:74px;font-weight:800;line-height:0.95;letter-spacing:1px;`, '0');
-    const row = el(speedBox, `display:flex;gap:14px;align-items:baseline;`);
-    el(row, `font-size:15px;letter-spacing:5px;opacity:0.85;`, 'MPH');
-    this.gear = el(row, `font-size:15px;letter-spacing:3px;color:${CYAN};`, 'D');
-    this.odo = el(speedBox, `font-size:11px;letter-spacing:2px;opacity:0.72;margin-top:5px;
-      white-space:nowrap;`, 'ODO 0.0 &middot; TRIP 0.0 MI');
+    // ================= instrument cluster (bottom centre) =================
+    // Bowed segmented gauges flank a thin technical speed readout; every value
+    // sits in a corner-bracket frame.
+    const cluster = el(this.root, `position:absolute;left:26px;bottom:16px;
+      display:flex;align-items:flex-end;gap:14px;`);
+    this.cluster = cluster;
 
-    this.buildTach();
+    const fuelCol = el(cluster, `display:flex;flex-direction:column;align-items:center;gap:6px;`);
+    el(fuelCol, `font-size:9px;letter-spacing:3px;opacity:0.55;`, '100%');
+    this.fuelGauge = this.buildArcGauge(fuelCol, -1);
+    this.fuelReadout = el(fuelCol, `font-size:17px;letter-spacing:1px;color:${AMBER};
+      padding:3px 10px;min-width:44px;text-align:center;`, '100');
+    brackets(this.fuelReadout, 'rgba(255,184,77,0.55)');
+    this.fuelLabel = el(fuelCol, `font-size:9px;letter-spacing:3px;opacity:0.7;`, 'FUEL %');
 
-    // fuel, bottom-center
-    const fuelBox = el(this.root, `position:absolute;left:50%;transform:translateX(-50%);bottom:30px;text-align:center;`);
-    this.fuelBox = fuelBox;
-    this.fuelLabel = el(fuelBox, `font-size:11px;letter-spacing:5px;margin-bottom:5px;opacity:0.9;`, 'FUEL');
-    const fuelBar = el(fuelBox, BAR_WRAP(260));
-    this.fuelFill = el(fuelBar, `height:100%;width:100%;background:${AMBER};box-shadow:0 0 10px rgba(255,170,60,0.8);`);
+    // centre column: speed, gear, odometer
+    const mid = el(cluster, `display:flex;flex-direction:column;align-items:center;
+      padding:0 10px 6px;background-image:radial-gradient(rgba(255,255,255,0.10) 1px, transparent 1px);
+      background-size:11px 11px;background-position:center 12px;background-repeat:round;`);
+    this.mph = el(mid, `font-size:78px;font-weight:300;line-height:0.9;letter-spacing:-1px;
+      color:#fff;text-shadow:0 0 18px rgba(255,255,255,0.35);`, '0');
+    el(mid, `font-size:12px;letter-spacing:7px;opacity:0.8;margin-top:2px;color:#fff;`, 'MPH');
+    this.gear = el(mid, `font-size:16px;letter-spacing:2px;color:${AMBER};margin-top:10px;
+      padding:2px 12px;`, 'G1');
+    brackets(this.gear, 'rgba(255,184,77,0.5)', 5);
+    this.odo = el(mid, `font-size:12px;letter-spacing:2px;opacity:0.62;margin-top:7px;
+      white-space:nowrap;color:#fff;`, '0.0 mi');
 
-    // integrity, top-left
+    const revCol = el(cluster, `display:flex;flex-direction:column;align-items:center;gap:6px;`);
+    el(revCol, `font-size:9px;letter-spacing:3px;opacity:0.55;color:${RED};`, 'REDLINE');
+    this.revGauge = this.buildArcGauge(revCol, 1);
+    this.revReadout = el(revCol, `font-size:17px;letter-spacing:1px;color:${CYAN};
+      padding:3px 10px;min-width:52px;text-align:center;`, '850');
+    brackets(this.revReadout, 'rgba(88,230,255,0.55)');
+    el(revCol, `font-size:9px;letter-spacing:3px;opacity:0.7;`, 'RPM');
+
+    // ---- compass rose, bottom-left ----
+    this.buildCompass();
+
+    // ---- integrity, top-left (segmented + bracketed) ----
     const hBox = el(this.root, `position:absolute;left:34px;top:26px;`);
-    el(hBox, `font-size:11px;letter-spacing:5px;margin-bottom:5px;opacity:0.9;`, 'INTEGRITY');
-    const hBar = el(hBox, BAR_WRAP(190));
-    this.healthFill = el(hBar, `height:100%;width:100%;background:${CYAN};box-shadow:0 0 10px rgba(80,220,255,0.7);`);
+    el(hBox, `font-size:10px;letter-spacing:5px;margin-bottom:6px;opacity:0.85;`, 'INTEGRITY');
+    const hFrame = el(hBox, `padding:5px 7px;`);
+    brackets(hFrame, 'rgba(255,255,255,0.35)');
+    this.healthSegs = [];
+    const hRow = el(hFrame, `display:flex;gap:3px;`);
+    for (let i = 0; i < 20; i++) {
+      this.healthSegs.push(el(hRow, `width:8px;height:12px;background:${CYAN};`));
+    }
 
-    // credits + checkpoints, top-right
-    const tr = el(this.root, `position:absolute;right:34px;top:26px;text-align:right;font-size:17px;
-      letter-spacing:3px;line-height:1.7;text-shadow:0 0 10px rgba(255,150,40,0.5);`);
-    this.credits = el(tr, '', 'CREDITS 1');
-    this.checkpoints = el(tr, `color:${CYAN};text-shadow:0 0 10px rgba(80,220,255,0.5);`, '');
+    // ---- credits + checkpoints, top-right ----
+    const tr = el(this.root, `position:absolute;right:34px;top:26px;text-align:right;
+      display:flex;flex-direction:column;align-items:flex-end;gap:8px;`);
+    this.credits = el(tr, `font-size:15px;letter-spacing:3px;padding:4px 12px;`, 'CREDITS 1');
+    brackets(this.credits, 'rgba(255,184,77,0.45)', 5);
+    this.checkpoints = el(tr, `font-size:15px;letter-spacing:3px;color:${CYAN};padding:4px 12px;`, '');
+    brackets(this.checkpoints, 'rgba(88,230,255,0.45)', 5);
+
+    // ---- drive summary, right side ----
+    const ds = el(this.root, `position:absolute;right:34px;top:46%;transform:translateY(-50%);
+      padding:13px 14px;width:158px;box-sizing:border-box;`);
+    this.driveSummary = ds;
+    brackets(ds, 'rgba(255,255,255,0.30)', 8);
+    el(ds, `font-size:10px;letter-spacing:3px;opacity:0.8;text-align:center;margin-bottom:10px;
+      color:#fff;white-space:nowrap;`, 'DRIVE SUMMARY');
+    const dsRow = (glyph: string) => {
+      const r = el(ds, `display:flex;align-items:center;justify-content:space-between;
+        gap:14px;margin-top:9px;`);
+      el(r, `font-size:15px;opacity:0.65;`, glyph);
+      const v = el(r, `text-align:right;`);
+      const num = el(v, `font-size:19px;font-weight:300;color:#fff;line-height:1;`, '0.0');
+      const unit = el(v, `font-size:10px;letter-spacing:1px;color:${AMBER};margin-top:2px;`, '');
+      return { num, unit };
+    };
+    const rTrip = dsRow('&#10230;');
+    const rOdo = dsRow('&#9186;');
+    const rTime = dsRow('&#9201;');
+    this.dsTrip = rTrip.num; rTrip.unit.textContent = 'mi trip';
+    this.dsOdo = rOdo.num; rOdo.unit.textContent = 'mi total';
+    this.dsTime = rTime.num; rTime.unit.textContent = 'min:sec';
 
     // boundary warning, top-center
     this.warning = el(this.root, `position:absolute;left:50%;transform:translateX(-50%);top:56px;
@@ -135,8 +205,6 @@ export class Hud {
 
   private attractCreditLine!: HTMLDivElement;
   private pauseEl!: HTMLDivElement;
-  private speedBox!: HTMLDivElement;
-  private fuelBox!: HTMLDivElement;
   private coinEl!: HTMLDivElement;
   private hintEl!: HTMLDivElement;
   private dataStampEl!: HTMLDivElement;
@@ -158,82 +226,104 @@ export class Hud {
     this.coinEl.textContent = 'TAP TO START';
     this.hintEl.innerHTML =
       'ON-SCREEN PEDALS &nbsp; DRIFT = HANDBRAKE<br/>&#10227; FLIP RESCUE &nbsp; &#10074;&#10074; PAUSE &nbsp; RUN THE BLUE RINGS';
-    this.speedBox.style.bottom = '130px';
-    this.speedBox.style.left = '22px';
-    this.mph.style.fontSize = '52px';
-    this.tachBox.style.left = '150px';
-    this.tachBox.style.bottom = '120px';
-    this.tachBox.style.width = '96px';
-    this.tachBox.style.height = '96px';
-    (this.tachBox.firstElementChild as SVGElement).setAttribute('width', '96');
-    (this.tachBox.firstElementChild as SVGElement).setAttribute('height', '96');
-    this.fuelBox.style.bottom = '8px';
-    this.fuelBox.style.left = '40%';
-    (this.fuelFill.parentElement as HTMLElement).style.width = '150px';
+    // compact the cluster and hide the side panels: thumbs need the corners
+    this.mph.style.fontSize = '48px';
+    this.cluster.style.bottom = '96px';
+    this.cluster.style.transform = 'translateX(-50%) scale(0.72)';
+    this.cluster.style.transformOrigin = 'bottom center';
+    this.driveSummary.style.display = 'none';
   }
 
-  /** analogue rev counter: 270-degree sweep, ticks per 1000 rpm, red zone */
-  private buildTach() {
-    const R = 40;
-    const A0 = 135, SWEEP = 270; // 0 rpm at lower-left, sweeping up over the top
-    const pt = (deg: number, r: number) => {
-      const a = (deg * Math.PI) / 180;
-      return [50 + r * Math.cos(a), 50 + r * Math.sin(a)];
-    };
-    const arc = (d0: number, d1: number, r: number) => {
-      const [x0, y0] = pt(d0, r), [x1, y1] = pt(d1, r);
-      return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
-    };
-    const ang = (rpm: number) => A0 + (rpm / MAX_RPM) * SWEEP;
-
-    let ticks = '';
-    for (let k = 0; k * 1000 <= MAX_RPM; k++) {
-      const a = ang(k * 1000);
-      const major = k % 2 === 0;
-      const [ix, iy] = pt(a, major ? R - 8 : R - 5);
-      const [ox, oy] = pt(a, R);
-      const hot = k * 1000 >= REDLINE_RPM;
-      ticks += `<line x1="${ix.toFixed(2)}" y1="${iy.toFixed(2)}" x2="${ox.toFixed(2)}" y2="${oy.toFixed(2)}"
-        stroke="${hot ? RED : 'rgba(255,255,255,0.55)'}" stroke-width="${major ? 1.6 : 0.9}"/>`;
-      if (major) {
-        const [lx, ly] = pt(a, R - 15);
-        ticks += `<text x="${lx.toFixed(2)}" y="${(ly + 2.6).toFixed(2)}" text-anchor="middle"
-          font-size="7" fill="${hot ? RED : 'rgba(255,255,255,0.75)'}" font-family="inherit">${k}</text>`;
-      }
+  /** bowed segmented column — the signature gauge of the cluster.
+   *  side -1 bulges left, +1 bulges right, mirroring around the speed. */
+  private buildArcGauge(host: HTMLElement, side: -1 | 1): SVGLineElement[] {
+    const N = 26, H = 168, BOW = 13, HALF = 7.5;
+    let lines = '';
+    for (let i = 0; i < N; i++) {
+      const t = (i + 0.5) / N;
+      const y = 6 + H * (1 - t);
+      const cx = 22 + side * BOW * Math.sin(Math.PI * t);
+      lines += `<line x1="${(cx - HALF).toFixed(2)}" y1="${y.toFixed(2)}"
+        x2="${(cx + HALF).toFixed(2)}" y2="${y.toFixed(2)}"
+        stroke="${DIM}" stroke-width="3.4" stroke-linecap="butt"/>`;
     }
-
-    this.tachBox = el(this.root, `position:absolute;left:200px;bottom:16px;width:146px;height:146px;
-      filter:drop-shadow(0 0 8px rgba(255,150,40,0.35));`);
-    this.tachBox.innerHTML = `
-      <svg viewBox="0 0 100 104" width="146" height="152">
-        <path d="${arc(A0, A0 + SWEEP, R)}" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.4"/>
-        <path d="${arc(ang(REDLINE_RPM), A0 + SWEEP, R)}" fill="none" stroke="${RED}" stroke-width="2.6" opacity="0.85"/>
-        ${ticks}
-        <text x="50" y="66" text-anchor="middle" font-size="6" fill="${AMBER}"
-          opacity="0.6" letter-spacing="1.2" font-family="inherit">RPM x1000</text>
-        <text id="tgear" x="50" y="92" text-anchor="middle" font-size="15" font-weight="700"
-          fill="${CYAN}" font-family="inherit">1</text>
-        <line id="tneedle" x1="50" y1="50" x2="${pt(A0, R - 3)[0].toFixed(2)}" y2="${pt(A0, R - 3)[1].toFixed(2)}"
-          stroke="${AMBER}" stroke-width="2.2" stroke-linecap="round"/>
-        <circle cx="50" cy="50" r="3.2" fill="${AMBER}"/>
-      </svg>`;
-    this.tachNeedle = this.tachBox.querySelector('#tneedle') as SVGLineElement;
-    this.tachGear = this.tachBox.querySelector('#tgear') as SVGTextElement;
+    const box = el(host, `width:44px;height:180px;`);
+    box.innerHTML = `<svg viewBox="0 0 44 180" width="44" height="180">${lines}</svg>`;
+    return Array.from(box.querySelectorAll('line')) as unknown as SVGLineElement[];
   }
 
-  /** needle + gear number; redline turns the needle red */
+  private fillGauge(segs: SVGLineElement[], v01: number, color: string, hotFrom = 2) {
+    const n = segs.length;
+    const lit = Math.round(Math.max(0, Math.min(1, v01)) * n);
+    for (let i = 0; i < n; i++) {
+      const t = (i + 0.5) / n;
+      const on = i < lit;
+      segs[i].setAttribute('stroke', on ? (t >= hotFrom ? RED : color) : DIM);
+    }
+  }
+
+  /** rotating compass rose, bottom-left */
+  private buildCompass() {
+    let ticks = '';
+    for (let d = 0; d < 360; d += 5) {
+      const major = d % 45 === 0;
+      const a = ((d - 90) * Math.PI) / 180;
+      const r0 = major ? 34 : 38, r1 = 42;
+      ticks += `<line x1="${(50 + r0 * Math.cos(a)).toFixed(2)}" y1="${(50 + r0 * Math.sin(a)).toFixed(2)}"
+        x2="${(50 + r1 * Math.cos(a)).toFixed(2)}" y2="${(50 + r1 * Math.sin(a)).toFixed(2)}"
+        stroke="rgba(255,255,255,${major ? 0.7 : 0.3})" stroke-width="${major ? 1.4 : 0.7}"/>`;
+    }
+    ['N', 'E', 'S', 'W'].forEach((c, i) => {
+      const a = ((i * 90 - 90) * Math.PI) / 180;
+      ticks += `<text x="${(50 + 26 * Math.cos(a)).toFixed(2)}" y="${(50 + 26 * Math.sin(a) + 3).toFixed(2)}"
+        text-anchor="middle" font-size="9" fill="${c === 'N' ? AMBER : 'rgba(255,255,255,0.75)'}"
+        font-family="inherit">${c}</text>`;
+    });
+    const box = el(this.root, `position:absolute;left:30px;top:74px;width:104px;height:104px;opacity:0.92;`);
+    box.innerHTML = `
+      <svg viewBox="0 0 100 100" width="104" height="104">
+        <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="0.8"/>
+        <circle cx="50" cy="50" r="20" fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="0.8"/>
+        <g id="cring">${ticks}</g>
+        <polygon points="50,4 46.5,11 53.5,11" fill="${AMBER}"/>
+        <text id="chead" x="50" y="56" text-anchor="middle" font-size="22" font-weight="300"
+          fill="${AMBER}" font-family="inherit">N</text>
+      </svg>`;
+    this.compassRing = box.querySelector('#cring') as SVGGElement;
+    this.compassLabel = box.querySelector('#chead') as SVGTextElement;
+  }
+
+  /** heading in degrees, 0 = north */
+  setCompass(deg: number) {
+    const d = ((deg % 360) + 360) % 360;
+    this.compassRing.setAttribute('transform', `rotate(${(-d).toFixed(1)} 50 50)`);
+    const names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    this.compassLabel.textContent = names[Math.round(d / 45) % 8];
+  }
+
+  /** rev column + numeric readout; the top of the bar is the red zone */
   setRev(rpm: number, gear: number) {
     const r = Math.max(0, Math.min(MAX_RPM, rpm));
-    const deg = 135 + (r / MAX_RPM) * 270;
-    this.tachNeedle.setAttribute('transform', `rotate(${(deg - 135).toFixed(1)} 50 50)`);
-    this.tachNeedle.setAttribute('stroke', r >= REDLINE_RPM ? RED : AMBER);
-    this.tachGear.textContent = String(gear + 1);
+    this.fillGauge(this.revGauge, r / MAX_RPM, CYAN, REDLINE_RPM / MAX_RPM);
+    this.revReadout.textContent = String(Math.round(r));
+    this.revReadout.style.color = r >= REDLINE_RPM ? RED : CYAN;
+    void gear;
   }
 
   /** trip + lifetime distance, in miles */
   setOdo(tripMeters: number, totalMeters: number) {
     const mi = (m: number) => (m / 1609.34).toFixed(1);
-    this.odo.innerHTML = `ODO ${mi(totalMeters)} &middot; TRIP ${mi(tripMeters)} MI`;
+    this.odo.textContent = `${mi(totalMeters)} mi`;
+    this.dsTrip.textContent = mi(tripMeters);
+    this.dsOdo.textContent = mi(totalMeters);
+  }
+
+  /** elapsed run time for the drive summary */
+  setRunTime(seconds: number) {
+    this.runSeconds = seconds;
+    const m = Math.floor(seconds / 60);
+    const sec = Math.floor(seconds % 60);
+    this.dsTime.textContent = `${m}:${String(sec).padStart(2, '0')}`;
   }
 
   setSpeed(mph: number, gear: string) {
@@ -242,15 +332,18 @@ export class Hud {
   }
   setFuel(f01: number) {
     const pc = Math.max(0, Math.min(1, f01));
-    this.fuelFill.style.width = `${pc * 100}%`;
     const low = pc < 0.22;
-    this.fuelFill.style.background = low ? RED : AMBER;
+    this.fillGauge(this.fuelGauge, pc, low ? RED : AMBER);
+    this.fuelReadout.textContent = String(Math.round(pc * 100));
+    this.fuelReadout.style.color = low ? RED : AMBER;
     this.fuelLabel.style.color = low ? RED : AMBER;
   }
   setHealth(h01: number) {
     const pc = Math.max(0, Math.min(1, h01));
-    this.healthFill.style.width = `${pc * 100}%`;
-    this.healthFill.style.background = pc < 0.3 ? RED : CYAN;
+    const lit = Math.round(pc * this.healthSegs.length);
+    for (let i = 0; i < this.healthSegs.length; i++) {
+      this.healthSegs[i].style.background = i < lit ? (pc < 0.3 ? RED : CYAN) : DIM;
+    }
   }
   setCredits(n: number) {
     this.credits.textContent = `CREDITS ${n}`;

@@ -45,6 +45,7 @@ export class Game {
   })();
   private odoSaveT = 0;
   private lastTrip = 0;
+  private runTime = 0;
 
   constructor(
     private scene: THREE.Scene,
@@ -124,6 +125,7 @@ export class Game {
     this.crash.repair();
     this.vehicle.tripMeters = 0;
     this.lastTrip = 0;
+    this.runTime = 0;
     this.vehicle.reset(SPAWN, SPAWN_YAW);
     this.rollCheckpoints();
     this.state = 'running';
@@ -351,6 +353,11 @@ export class Game {
       this.hud.setFuel(this.fuel / 100);
       this.hud.setRev(mphSource.rpm, mphSource.gear);
       this.hud.setOdo(mphSource.tripMeters, this.odoMeters);
+      this.runTime += dt;
+      this.hud.setRunTime(this.runTime);
+      // compass: north is -z in this world
+      mphSource.forwardDir(_v2);
+      this.hud.setCompass((Math.atan2(_v2.x, -_v2.z) * 180) / Math.PI);
       this.hud.setHealth(this.crash.health / 100);
       this.hud.setWarning(this.warn01 > 0 ? this.warn01 : null);
     } else if (this.state === 'gameover') {
