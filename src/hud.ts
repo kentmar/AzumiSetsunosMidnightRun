@@ -190,10 +190,14 @@ export class Hud {
       <span style="font-size:14px;letter-spacing:3px;">REBOUND AT 30% SPEED — FUEL COST · ${(Math.min(1, w01) * 100).toFixed(0)}%</span>`;
     this.warning.style.opacity = String(0.5 + 0.5 * Math.sin(performance.now() * 0.02));
   }
+  /** set by main: lets audio sting checkpoints/credits */
+  onPopup?: (text: string) => void;
+
   popup(text: string) {
     this.popupEl.textContent = text;
     this.popupEl.style.opacity = '1';
     this.popupT = 1.4;
+    this.onPopup?.(text);
   }
   flash(strength: number) {
     this.flashEl.animate(

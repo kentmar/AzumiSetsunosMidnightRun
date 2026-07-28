@@ -26,6 +26,7 @@ const DEFS: SliderDef[] = [
   { key: 'comHeight', min: -0.6, max: 0.2, step: 0.01, group: 'Suspension' },
   { key: 'downforce', min: 0, max: 12, step: 0.1, group: 'Suspension' },
   { key: 'slopeForce', min: 0, max: 12, step: 0.1, group: 'Vehicle' },
+  { key: 'audioVolume', min: 0, max: 1, step: 0.05, group: 'Vehicle' },
   { key: 'frontGrip', min: 0.3, max: 2.2, step: 0.01, group: 'Grip' },
   { key: 'rearGrip', min: 0.3, max: 2.2, step: 0.01, group: 'Grip' },
   { key: 'handbrakeGripCut', min: 0.05, max: 0.8, step: 0.01, group: 'Grip' },

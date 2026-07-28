@@ -21,6 +21,7 @@ import { Hud } from './hud';
 import { Panel } from './panel';
 import { Game } from './game';
 import { Minimap } from './minimap';
+import { AudioSystem } from './audio';
 
 // Boot + fixed-timestep (60 Hz) physics loop decoupled from render, with
 // interpolation. crash.timeScale drives the slow-mo.
@@ -103,6 +104,19 @@ async function boot() {
       () => draco.dispose() // keep the procedural car on any load error
     );
   }
+
+  // ---- audio ----
+  // Web Audio must be created inside a user gesture; every route into a run
+  // goes through a keypress or a tap, so we start it on the first one.
+  const audio = new AudioSystem();
+  const wakeAudio = () => audio.start();
+  for (const code of ['Enter', 'KeyC', 'Space', 'KeyW', 'ArrowUp']) input.onPress(code, wakeAudio);
+  addEventListener('pointerdown', wakeAudio, { once: false });
+  crash.onImpact = (dv) => audio.impact(dv);
+  hud.onPopup = (text) => {
+    if (/CHECKPOINT/.test(text)) audio.blip(760, 0.11);
+    else if (/CREDIT|COMPLETE/.test(text)) audio.blip(1040, 0.2, 0.11);
+  };
 
   const panel = new Panel(() => vehicle.applyTuning());
   input.onPress('KeyP', () => panel.toggle());
@@ -308,6 +322,16 @@ async function boot() {
     } else {
       chase.update(realDt, vehicle, crash);
     }
+    audio.update(realDt, {
+      running: game.state === 'running',
+      speed: vehicle.speed,
+      throttle: vehicle.throttle01,
+      drifting: vehicle.drifting,
+      onGround: vehicle.onGround,
+      dead: crash.totaled || vehicle.fuelEmpty,
+      inTunnel: city.inTunnel(vehicle.currPos),
+      timeScale: crash.timeScale,
+    });
     sky.update(realDt, chase.cam.position);
     city.update(game.simTime, sky.lightning01, vehicle.currPos);
     game.update(realDt, vehicle);
@@ -352,7 +376,7 @@ async function boot() {
 
   // debug/inspection handle (dev only)
   (window as unknown as Record<string, unknown>).NR = {
-    game, vehicle, crash, chase, world, scene, traffic, minimap, city, elevationAt,
+    game, vehicle, crash, chase, world, scene, traffic, minimap, city, elevationAt, audio,
   };
 }
 

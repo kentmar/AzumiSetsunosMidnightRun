@@ -42,6 +42,8 @@ export class CrashSystem {
   private resolveReason = '';
   private prevVel = new THREE.Vector3();
   private detached: Detached[] = [];
+  /** set by main: raw impact delta-v, for audio */
+  onImpact?: (dv: number) => void;
   private crashCamT = 0;
 
   constructor(
@@ -110,6 +112,7 @@ export class CrashSystem {
 
     this.shake = Math.min(1.6, (dv / 9) * TUNING.crashShake);
     this.onFlash(Math.min(1, dv / 14));
+    this.onImpact?.(dv);
 
     if (willTotal) this.total('WRECKED', dirWorld, dv);
     else this.graceT = 0.35; // don't double-count one collision

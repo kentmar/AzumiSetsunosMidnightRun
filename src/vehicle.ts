@@ -40,6 +40,8 @@ export class PlayerVehicle {
   fuelEmpty = false;
   /** set by Game while past the seawall — camera locks above the surface */
   underwater = false;
+  /** last applied throttle (0..1), for engine audio load */
+  throttle01 = 0;
 
   prevPos = new THREE.Vector3();
   currPos = new THREE.Vector3();
@@ -162,6 +164,7 @@ export class PlayerVehicle {
     this.handbraking = input.handbrake;
 
     const falloff = Math.max(0, 1 - Math.max(0, this.forwardSpeed) / t.maxSpeed);
+    this.throttle01 = input.throttle;
     if (input.throttle > 0 && !this.fuelEmpty) {
       if (this.forwardSpeed < -0.5) {
         brake = t.brakeForce; // braking out of reverse
