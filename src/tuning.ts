@@ -19,6 +19,8 @@ export const TUNING = {
   steerMax: 0.6,         // rad at standstill
   steerSpeedDrop: 0.02,  // steering tightens with speed
   downforce: 3.2,        // N per (m/s)^2
+  trafficCars: 16,      // live moving cars (0-90)
+  parkedCars: 900,      // kerbside cars (0-4000)
   audioVolume: 0.7,     // master mix; 0 mutes
   audioEngine: 1.0,     // engine bed level
   audioTurbo: 1.0,      // turbo whistle + blow-off level

@@ -26,6 +26,8 @@ const DEFS: SliderDef[] = [
   { key: 'comHeight', min: -0.6, max: 0.2, step: 0.01, group: 'Suspension' },
   { key: 'downforce', min: 0, max: 12, step: 0.1, group: 'Suspension' },
   { key: 'slopeForce', min: 0, max: 12, step: 0.1, group: 'Vehicle' },
+  { key: 'trafficCars', min: 0, max: 90, step: 1, group: 'World' },
+  { key: 'parkedCars', min: 0, max: 4000, step: 50, group: 'World' },
   { key: 'audioVolume', min: 0, max: 1, step: 0.05, group: 'Vehicle' },
   { key: 'audioEngine', min: 0, max: 2, step: 0.05, group: 'Vehicle' },
   { key: 'audioTurbo', min: 0, max: 2, step: 0.05, group: 'Vehicle' },

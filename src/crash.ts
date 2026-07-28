@@ -44,6 +44,8 @@ export class CrashSystem {
   private detached: Detached[] = [];
   /** set by main: raw impact delta-v, for audio */
   onImpact?: (dv: number) => void;
+  /** GM mode: keep the sparks and the shake, skip the consequences */
+  godMode = false;
   private crashCamT = 0;
 
   constructor(
@@ -77,7 +79,7 @@ export class CrashSystem {
 
   private impact(dv: number, dirWorld: THREE.Vector3) {
     const hard = dv >= TUNING.crashDvHard;
-    this.health -= (dv - TUNING.crashDvGlance) * 6 + 4;
+    if (!this.godMode) this.health -= (dv - TUNING.crashDvGlance) * 6 + 4;
 
     // local direction decides which panels take it
     const r = this.vehicle.body.rotation();
@@ -157,7 +159,7 @@ export class CrashSystem {
 
   /** boundary detonation / out-of-fuel: total without a collision */
   forceTotal(reason: string) {
-    if (this.totaled) return;
+    if (this.totaled || this.godMode) return; // GM mode survives fuel and water too
     this.vehicle.velocity(_v);
     const dir = _v.lengthSq() > 1 ? _v.normalize() : _v.set(0, 0, 1);
     this.vehicle.worldPosition(_p);

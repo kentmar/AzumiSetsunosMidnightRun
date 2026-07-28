@@ -16,7 +16,7 @@ import { City, FOG, SPAWN, META, nearestEdgePoint, EDGES, elevationAt } from './
 import { PlayerVehicle } from './vehicle';
 import { CrashSystem } from './crash';
 import { ChaseCamera } from './camera';
-import { Traffic } from './traffic';
+import { Traffic, ParkedCars } from './traffic';
 import { Hud } from './hud';
 import { Panel } from './panel';
 import { Game } from './game';
@@ -65,7 +65,8 @@ async function boot() {
     (s) => hud.flash(s),
     (reason) => game.onTotaled(reason)
   );
-  const traffic = new Traffic(world, RAPIER, scene, particles, 11);
+  const traffic = new Traffic(world, RAPIER, scene, particles, TUNING.trafficCars);
+  const parked = new ParkedCars(world, RAPIER, scene, TUNING.parkedCars);
   game = new Game(scene, city, vehicle, crash, hud, input);
   game.onRespawn = () => chase.snap(vehicle);
   const minimap = new Minimap(hud.root, IS_TOUCH);
@@ -118,7 +119,11 @@ async function boot() {
     else if (/CREDIT|COMPLETE/.test(text)) audio.blip(1040, 0.2, 0.11);
   };
 
-  const panel = new Panel(() => vehicle.applyTuning());
+  const panel = new Panel(() => {
+    vehicle.applyTuning();
+    traffic.setDensity(TUNING.trafficCars);
+    parked.setDensity(TUNING.parkedCars);
+  });
   input.onPress('KeyP', () => panel.toggle());
 
   // ---- GM mode: collision overlay + map-discrepancy flagging ----
@@ -174,21 +179,27 @@ async function boot() {
   scene.add(flagMarkers);
   const addFlagBeacon = (x: number, z: number) => {
     const m = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.6, 0.6, 44, 6, 1, true),
+      new THREE.CylinderGeometry(0.45, 0.45, 40, 6, 1, true),
       new THREE.MeshBasicMaterial({
         color: 0xff3344, transparent: true, opacity: 0.45,
         blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
       })
     );
-    m.position.set(x, elevationAt(x, z) + 22, z);
+    // starts well above roof-of-car height: a beacon you sight, not a column
+    // you drive inside and lose the car behind
+    m.position.set(x, elevationAt(x, z) + 28, z);
     flagMarkers.add(m);
   };
   for (const f of gmFlags) addFlagBeacon(f.x, f.z);
   input.onPress('KeyG', () => {
     gmMode = !gmMode;
     city.setDebug(gmMode);
+    crash.godMode = gmMode; // invulnerable while surveying
     flagMarkers.visible = true;
-    hud.popup(gmMode ? 'GM MODE — F FLAG · HOLD V GHOSTS WALLS · X EXPORT' : 'GM MODE OFF');
+    if (gmMode) { crash.repair(); game.fuel = 100; vehicle.fuelEmpty = false; }
+    hud.popup(gmMode
+      ? 'GM MODE — INVULNERABLE · F FLAG · HOLD V GHOST · X EXPORT · P DENSITY'
+      : 'GM MODE OFF');
   });
   input.onPress('KeyF', () => {
     if (!gmMode || noteBox) return;
@@ -378,7 +389,7 @@ async function boot() {
 
   // debug/inspection handle (dev only)
   (window as unknown as Record<string, unknown>).NR = {
-    game, vehicle, crash, chase, world, scene, traffic, minimap, city, elevationAt, audio, RAPIER,
+    game, vehicle, crash, chase, world, scene, traffic, parked, minimap, city, elevationAt, audio, RAPIER,
   };
 }
 
