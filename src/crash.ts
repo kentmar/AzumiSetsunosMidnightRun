@@ -79,7 +79,23 @@ export class CrashSystem {
 
   private impact(dv: number, dirWorld: THREE.Vector3) {
     const hard = dv >= TUNING.crashDvHard;
-    if (!this.godMode) this.health -= (dv - TUNING.crashDvGlance) * 6 + 4;
+
+    // GM mode: keep every bit of feedback — sparks, shake, screen flash, the
+    // impact sting — but take none of the consequences. Guarding only `health`
+    // was not enough: a hard hit totals on `dv` alone, and panels shed on any
+    // hit, so the car still came apart while surveying.
+    if (this.godMode) {
+      this.vehicle.worldPosition(_p).addScaledVector(dirWorld, 1.8);
+      _p.y = Math.max(_p.y, 0.4);
+      this.particles.burstSparks(_p, dirWorld, Math.min(60, 14 + dv * 4), 6 + dv * 0.6);
+      this.shake = Math.min(1.6, (dv / 9) * TUNING.crashShake);
+      this.onFlash(Math.min(1, dv / 14));
+      this.onImpact?.(dv);
+      this.graceT = 0.35;
+      return;
+    }
+
+    this.health -= (dv - TUNING.crashDvGlance) * 6 + 4;
 
     // local direction decides which panels take it
     const r = this.vehicle.body.rotation();

@@ -255,7 +255,7 @@ export class Game {
     // above the surface; a few seconds under and the run is over
     // past a shoreline and not inside a bore (the tunnels run out under the
     // river, so a depth test would either miss drownings or drown drivers)
-    const inWater = !this.city.inTunnel(_v) &&
+    const inWater = !this.crash.godMode && !this.city.inTunnel(_v) &&
       (_v.x < this.city.shoreWest(_v.z) || _v.x > this.city.shoreEast(_v.z));
     this.vehicle.underwater = inWater;
     if (inWater && !this.crash.totaled) {
