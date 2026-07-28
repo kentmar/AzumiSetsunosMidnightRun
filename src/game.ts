@@ -38,6 +38,13 @@ export class Game {
   private bounceCd = 0;
   private portalCd = 0;
   private sinking = 0; // seconds under the river; 0 = on land
+  /** lifetime distance in metres, persisted across sessions */
+  odoMeters = (() => {
+    const v = Number(localStorage.getItem('nightrun-odometer'));
+    return Number.isFinite(v) ? v : 0;
+  })();
+  private odoSaveT = 0;
+  private lastTrip = 0;
 
   constructor(
     private scene: THREE.Scene,
@@ -115,6 +122,8 @@ export class Game {
     this.sinking = 0;
     this.vehicle.body.setLinearDamping(0);
     this.crash.repair();
+    this.vehicle.tripMeters = 0;
+    this.lastTrip = 0;
     this.vehicle.reset(SPAWN, SPAWN_YAW);
     this.rollCheckpoints();
     this.state = 'running';
@@ -204,6 +213,16 @@ export class Game {
         this.vehicle.fuelEmpty = true;
         if (this.vehicle.speed < 1.2) this.crash.forceTotal('OUT OF FUEL');
       }
+    }
+
+    // odometer: fold this frame's trip distance into the lifetime total
+    const dTrip = Math.max(0, this.vehicle.tripMeters - this.lastTrip);
+    this.lastTrip = this.vehicle.tripMeters;
+    this.odoMeters += dTrip;
+    this.odoSaveT += dt;
+    if (this.odoSaveT > 5) {
+      this.odoSaveT = 0;
+      localStorage.setItem('nightrun-odometer', String(Math.round(this.odoMeters)));
     }
 
     this.vehicle.worldPosition(_v);
@@ -328,8 +347,10 @@ export class Game {
 
     if (this.state === 'running') {
       const mph = mphSource.forwardSpeed * 2.237;
-      this.hud.setSpeed(mph, mphSource.forwardSpeed < -0.5 ? 'R' : 'D');
+      this.hud.setSpeed(mph, mphSource.forwardSpeed < -0.5 ? 'R' : `G${mphSource.gear + 1}`);
       this.hud.setFuel(this.fuel / 100);
+      this.hud.setRev(mphSource.rpm, mphSource.gear);
+      this.hud.setOdo(mphSource.tripMeters, this.odoMeters);
       this.hud.setHealth(this.crash.health / 100);
       this.hud.setWarning(this.warn01 > 0 ? this.warn01 : null);
     } else if (this.state === 'gameover') {

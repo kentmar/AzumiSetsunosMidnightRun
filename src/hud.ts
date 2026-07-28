@@ -1,6 +1,8 @@
 // Tactical high-contrast DOM HUD: big MPH, fuel, integrity, credits, checkpoints,
 // boundary warning, plus the attract / game-over arcade overlays.
 
+import { MAX_RPM, REDLINE_RPM } from './vehicle';
+
 const AMBER = '#ffb84d';
 const CYAN = '#58e6ff';
 const RED = '#ff4455';
@@ -34,6 +36,10 @@ export class Hud {
   private goReason: HTMLDivElement;
   private goPrompt: HTMLDivElement;
   private fpsEl: HTMLDivElement;
+  private tachBox!: HTMLDivElement;
+  private tachNeedle!: SVGLineElement;
+  private tachGear!: SVGTextElement;
+  private odo!: HTMLDivElement;
   private popupT = 0;
 
   constructor() {
@@ -54,6 +60,10 @@ export class Hud {
     const row = el(speedBox, `display:flex;gap:14px;align-items:baseline;`);
     el(row, `font-size:15px;letter-spacing:5px;opacity:0.85;`, 'MPH');
     this.gear = el(row, `font-size:15px;letter-spacing:3px;color:${CYAN};`, 'D');
+    this.odo = el(speedBox, `font-size:11px;letter-spacing:2px;opacity:0.72;margin-top:5px;
+      white-space:nowrap;`, 'ODO 0.0 &middot; TRIP 0.0 MI');
+
+    this.buildTach();
 
     // fuel, bottom-center
     const fuelBox = el(this.root, `position:absolute;left:50%;transform:translateX(-50%);bottom:30px;text-align:center;`);
@@ -151,9 +161,79 @@ export class Hud {
     this.speedBox.style.bottom = '130px';
     this.speedBox.style.left = '22px';
     this.mph.style.fontSize = '52px';
+    this.tachBox.style.left = '150px';
+    this.tachBox.style.bottom = '120px';
+    this.tachBox.style.width = '96px';
+    this.tachBox.style.height = '96px';
+    (this.tachBox.firstElementChild as SVGElement).setAttribute('width', '96');
+    (this.tachBox.firstElementChild as SVGElement).setAttribute('height', '96');
     this.fuelBox.style.bottom = '8px';
     this.fuelBox.style.left = '40%';
     (this.fuelFill.parentElement as HTMLElement).style.width = '150px';
+  }
+
+  /** analogue rev counter: 270-degree sweep, ticks per 1000 rpm, red zone */
+  private buildTach() {
+    const R = 40;
+    const A0 = 135, SWEEP = 270; // 0 rpm at lower-left, sweeping up over the top
+    const pt = (deg: number, r: number) => {
+      const a = (deg * Math.PI) / 180;
+      return [50 + r * Math.cos(a), 50 + r * Math.sin(a)];
+    };
+    const arc = (d0: number, d1: number, r: number) => {
+      const [x0, y0] = pt(d0, r), [x1, y1] = pt(d1, r);
+      return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+    };
+    const ang = (rpm: number) => A0 + (rpm / MAX_RPM) * SWEEP;
+
+    let ticks = '';
+    for (let k = 0; k * 1000 <= MAX_RPM; k++) {
+      const a = ang(k * 1000);
+      const major = k % 2 === 0;
+      const [ix, iy] = pt(a, major ? R - 8 : R - 5);
+      const [ox, oy] = pt(a, R);
+      const hot = k * 1000 >= REDLINE_RPM;
+      ticks += `<line x1="${ix.toFixed(2)}" y1="${iy.toFixed(2)}" x2="${ox.toFixed(2)}" y2="${oy.toFixed(2)}"
+        stroke="${hot ? RED : 'rgba(255,255,255,0.55)'}" stroke-width="${major ? 1.6 : 0.9}"/>`;
+      if (major) {
+        const [lx, ly] = pt(a, R - 15);
+        ticks += `<text x="${lx.toFixed(2)}" y="${(ly + 2.6).toFixed(2)}" text-anchor="middle"
+          font-size="7" fill="${hot ? RED : 'rgba(255,255,255,0.75)'}" font-family="inherit">${k}</text>`;
+      }
+    }
+
+    this.tachBox = el(this.root, `position:absolute;left:200px;bottom:16px;width:146px;height:146px;
+      filter:drop-shadow(0 0 8px rgba(255,150,40,0.35));`);
+    this.tachBox.innerHTML = `
+      <svg viewBox="0 0 100 104" width="146" height="152">
+        <path d="${arc(A0, A0 + SWEEP, R)}" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.4"/>
+        <path d="${arc(ang(REDLINE_RPM), A0 + SWEEP, R)}" fill="none" stroke="${RED}" stroke-width="2.6" opacity="0.85"/>
+        ${ticks}
+        <text x="50" y="66" text-anchor="middle" font-size="6" fill="${AMBER}"
+          opacity="0.6" letter-spacing="1.2" font-family="inherit">RPM x1000</text>
+        <text id="tgear" x="50" y="92" text-anchor="middle" font-size="15" font-weight="700"
+          fill="${CYAN}" font-family="inherit">1</text>
+        <line id="tneedle" x1="50" y1="50" x2="${pt(A0, R - 3)[0].toFixed(2)}" y2="${pt(A0, R - 3)[1].toFixed(2)}"
+          stroke="${AMBER}" stroke-width="2.2" stroke-linecap="round"/>
+        <circle cx="50" cy="50" r="3.2" fill="${AMBER}"/>
+      </svg>`;
+    this.tachNeedle = this.tachBox.querySelector('#tneedle') as SVGLineElement;
+    this.tachGear = this.tachBox.querySelector('#tgear') as SVGTextElement;
+  }
+
+  /** needle + gear number; redline turns the needle red */
+  setRev(rpm: number, gear: number) {
+    const r = Math.max(0, Math.min(MAX_RPM, rpm));
+    const deg = 135 + (r / MAX_RPM) * 270;
+    this.tachNeedle.setAttribute('transform', `rotate(${(deg - 135).toFixed(1)} 50 50)`);
+    this.tachNeedle.setAttribute('stroke', r >= REDLINE_RPM ? RED : AMBER);
+    this.tachGear.textContent = String(gear + 1);
+  }
+
+  /** trip + lifetime distance, in miles */
+  setOdo(tripMeters: number, totalMeters: number) {
+    const mi = (m: number) => (m / 1609.34).toFixed(1);
+    this.odo.innerHTML = `ODO ${mi(totalMeters)} &middot; TRIP ${mi(tripMeters)} MI`;
   }
 
   setSpeed(mph: number, gear: string) {

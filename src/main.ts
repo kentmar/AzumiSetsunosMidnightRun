@@ -325,6 +325,8 @@ async function boot() {
     audio.update(realDt, {
       running: game.state === 'running',
       speed: vehicle.speed,
+      rpm: vehicle.rpm,
+      gear: vehicle.gear,
       throttle: vehicle.throttle01,
       drifting: vehicle.drifting,
       onGround: vehicle.onGround,

@@ -16,6 +16,9 @@ import { TUNING } from './tuning';
 export interface AudioState {
   running: boolean;
   speed: number; // m/s
+  /** from the vehicle's shared drivetrain, so needle and note always agree */
+  rpm: number;
+  gear: number;
   throttle: number; // 0..1
   drifting: boolean;
   onGround: boolean;
@@ -31,7 +34,6 @@ const MAX_RPM = 7200;
 // Arcade gearbox — AUDIO ONLY. The physics has no transmission, but a single
 // rising whine across the whole speed range sounds like a vacuum cleaner;
 // shift points are what make an engine read as an engine.
-const GEAR_TOP = [12, 22, 33, 45, 62]; // m/s at redline in each gear
 const FIRING_ORDER = 3; // inline-6, four-stroke: 3 power strokes per revolution
 const SHIFT_TIME = 0.18; // length of the shift cut
 
@@ -213,22 +215,14 @@ export class AudioSystem {
     const t = ctx.currentTime;
     const k = Math.min(1, dt * 12); // parameter smoothing
 
-    // ---- fake gearbox ----
-    const sp = Math.abs(s.speed);
-    let g = 0;
-    while (g < GEAR_TOP.length - 1 && sp > GEAR_TOP[g]) g++;
-    if (g !== this.gear) {
+    // ---- drivetrain comes from the vehicle now (single source of truth) ----
+    if (s.gear !== this.gear) {
       this.shiftT = SHIFT_TIME;
-      this.gear = g;
+      this.gear = s.gear;
     }
     this.shiftT = Math.max(0, this.shiftT - dt);
-    const lo = g === 0 ? 0 : GEAR_TOP[g - 1];
-    const span = Math.max(1, GEAR_TOP[g] - lo);
-    const rpm01 = Math.min(1.05, (sp - lo) / span);
-    const targetRpm = s.dead
-      ? 0
-      : IDLE_RPM + rpm01 * (MAX_RPM - IDLE_RPM) + (s.throttle > 0.05 ? 260 : 0);
-    this.rpm += (targetRpm - this.rpm) * Math.min(1, dt * (s.dead ? 2.5 : 7));
+    this.rpm = s.dead ? this.rpm + (0 - this.rpm) * Math.min(1, dt * 2.5) : s.rpm;
+    const rpm01 = Math.min(1.05, Math.max(0, (this.rpm - IDLE_RPM) / (MAX_RPM - IDLE_RPM)));
 
     // firing frequency, bent by slow-mo along with the rest of the sim
     const f = Math.max(8, (this.rpm / 60) * FIRING_ORDER) * Math.max(0.2, s.timeScale);
@@ -257,7 +251,7 @@ export class AudioSystem {
     this.prevThrottle = load;
 
     // ---- tyres ----
-    const slide = s.drifting && s.onGround ? Math.min(1, sp / 16) : 0;
+    const slide = s.drifting && s.onGround ? Math.min(1, Math.abs(s.speed) / 16) : 0;
     const tTarget = alive * slide * 0.13;
     this.tyreGain.gain.value += (tTarget - this.tyreGain.gain.value) * k;
 

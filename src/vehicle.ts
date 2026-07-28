@@ -10,6 +10,13 @@ import type { Particles } from './particles';
 // Wheel order: 0 FL, 1 FR, 2 RL, 3 RR. RWD by default (TUNING.awd blends).
 // Wheel hardpoints/radius come from the car model (real positions when glTF).
 
+// Arcade drivetrain. There is no real transmission — these ratios exist so the
+// tacho needle and the engine note come from ONE source and can never disagree.
+export const IDLE_RPM = 850;
+export const MAX_RPM = 7200;
+export const REDLINE_RPM = 6250;
+const GEAR_TOP = [12, 22, 33, 45, 62]; // m/s at redline in each gear
+
 const _q = new THREE.Quaternion();
 const _v = new THREE.Vector3();
 const _fwd = new THREE.Vector3();
@@ -42,6 +49,11 @@ export class PlayerVehicle {
   underwater = false;
   /** last applied throttle (0..1), for engine audio load */
   throttle01 = 0;
+  /** drivetrain readout — shared by the tacho and the engine synth */
+  rpm = IDLE_RPM;
+  gear = 0;
+  /** distance driven this run, metres */
+  tripMeters = 0;
 
   prevPos = new THREE.Vector3();
   currPos = new THREE.Vector3();
@@ -113,7 +125,10 @@ export class PlayerVehicle {
   }
 
   update(input: Input, dt: number) {
-    if (this.disabled) return;
+    if (this.disabled) {
+      this.rpm += (0 - this.rpm) * Math.min(1, dt * 2.5); // wound down when wrecked
+      return;
+    }
     const t = TUNING;
     const c = this.controller;
 
@@ -151,6 +166,19 @@ export class PlayerVehicle {
     this.drifting = this.slipAngle > 0.16 && this.speed > 6;
     this.onGround =
       c.wheelIsInContact(0) || c.wheelIsInContact(1) || c.wheelIsInContact(2) || c.wheelIsInContact(3);
+
+    // ---- drivetrain readout (fake gearbox; feeds the tacho AND the audio) ----
+    const sp = Math.abs(this.forwardSpeed);
+    let g = 0;
+    while (g < GEAR_TOP.length - 1 && sp > GEAR_TOP[g]) g++;
+    this.gear = g;
+    const gLo = g === 0 ? 0 : GEAR_TOP[g - 1];
+    const rpm01 = Math.min(1.04, (sp - gLo) / Math.max(1, GEAR_TOP[g] - gLo));
+    const rpmTarget = this.fuelEmpty
+      ? IDLE_RPM * 0.25
+      : IDLE_RPM + rpm01 * (MAX_RPM - IDLE_RPM) + (input.throttle > 0.05 ? 260 : 0);
+    this.rpm += (rpmTarget - this.rpm) * Math.min(1, dt * 7);
+    this.tripMeters += this.speed * dt;
 
     // ---- steering (tightens with speed) ----
     const steerMax = t.steerMax / (1 + Math.max(0, this.forwardSpeed) * t.steerSpeedDrop);
