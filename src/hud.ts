@@ -17,6 +17,46 @@ function el(parent: HTMLElement, style: string, html = ''): HTMLDivElement {
 
 const DIM = 'rgba(255,255,255,0.20)';
 
+// Instrument numerals drawn as stroked polylines on a 5x10 grid rather than set
+// in a font: square caps, open counters, one uniform weight. Matches the way the
+// car and the contour map are drawn, and costs no font bytes.
+const GLYPH: Record<string, number[][][]> = {
+  '0': [[[0, 0], [5, 0], [5, 10], [0, 10], [0, 0]]],
+  '1': [[[1.4, 1.6], [3.4, 0], [3.4, 10]]],
+  '2': [[[0, 1.8], [0, 0], [5, 0], [5, 5], [0, 5], [0, 10], [5, 10]]],
+  '3': [[[0, 0], [5, 0], [5, 10], [0, 10]], [[1, 5], [5, 5]]],
+  '4': [[[0, 0], [0, 6], [5, 6]], [[5, 1.2], [5, 10]]],
+  '5': [[[5, 0], [0, 0], [0, 5], [5, 5], [5, 10], [0, 10]]],
+  '6': [[[5, 0], [0, 0], [0, 10], [5, 10], [5, 5], [0, 5]]],
+  '7': [[[0, 0], [5, 0], [5, 10]]],
+  '8': [[[0, 0], [5, 0], [5, 10], [0, 10], [0, 0]], [[0, 5], [5, 5]]],
+  '9': [[[5, 5], [0, 5], [0, 0], [5, 0], [5, 10], [0, 10]]],
+  '.': [[[2.3, 9.6], [2.7, 9.6]]],
+  '-': [[[1, 5], [4, 5]]],
+};
+
+function numerals(text: string | number, size: number, color: string, weight = 1.1, gap = 2.2): string {
+  const unit = size / 10;
+  let x = 0, paths = '';
+  for (const ch of String(text)) {
+    const g = GLYPH[ch];
+    const w = ch === '.' ? 2.4 : ch === '1' ? 4.2 : 5;
+    if (g) {
+      for (const line of g) {
+        const d = line
+          .map(([px, py], i) => `${i ? 'L' : 'M'}${((x + px) * unit).toFixed(2)},${(py * unit).toFixed(2)}`)
+          .join(' ');
+        paths += `<path d="${d}" fill="none" stroke="${color}" stroke-width="${(weight * unit).toFixed(2)}"
+          stroke-linecap="square" stroke-linejoin="miter"/>`;
+      }
+    }
+    x += w + gap;
+  }
+  const tw = Math.max(1, (x - gap) * unit);
+  return `<svg width="${tw.toFixed(1)}" height="${size}" viewBox="0 0 ${tw.toFixed(1)} ${size}"
+    style="display:block;overflow:visible">${paths}</svg>`;
+}
+
 /** corner-bracket frame, the motif that ties the whole cluster together */
 function brackets(host: HTMLElement, color: string, size = 6) {
   // only promote static elements — absolutely-positioned hosts must keep theirs
@@ -54,10 +94,8 @@ export class Hud {
   private fuelReadout!: HTMLDivElement;
   private revReadout!: HTMLDivElement;
   private healthSegs!: HTMLDivElement[];
-  private driveSummary!: HTMLDivElement;
-  private dsTrip!: HTMLDivElement;
-  private dsOdo!: HTMLDivElement;
-  private dsTime!: HTMLDivElement;
+  private tripLine!: HTMLDivElement;
+  private tripMiles = '0.0';
   private compassRing!: SVGGElement;
   private compassLabel!: SVGTextElement;
   private runSeconds = 0;
@@ -73,46 +111,39 @@ export class Hud {
     el(this.root, `position:absolute;inset:0;background:radial-gradient(ellipse at center,
       transparent 55%, rgba(0,0,0,0.5) 100%);`);
 
-    // ================= instrument cluster (bottom centre) =================
-    // Bowed segmented gauges flank a thin technical speed readout; every value
-    // sits in a corner-bracket frame.
-    const cluster = el(this.root, `position:absolute;left:26px;bottom:16px;
-      display:flex;align-items:flex-end;gap:14px;`);
-    this.cluster = cluster;
-
-    const fuelCol = el(cluster, `display:flex;flex-direction:column;align-items:center;gap:6px;`);
+    // ============ instrument cluster ============
+    // Gauges thrown wide to the screen edges; speed and gear ride the right,
+    // clear of the road and of the minimap below them.
+    const fuelCol = el(this.root, `position:absolute;left:26px;bottom:18px;
+      display:flex;flex-direction:column;align-items:center;gap:5px;`);
     el(fuelCol, `font-size:9px;letter-spacing:3px;opacity:0.55;`, '100%');
     this.fuelGauge = this.buildArcGauge(fuelCol, -1);
-    this.fuelReadout = el(fuelCol, `font-size:17px;letter-spacing:1px;color:${AMBER};
-      padding:3px 10px;min-width:44px;text-align:center;`, '100');
+    this.fuelReadout = el(fuelCol, `padding:3px 9px;`, '');
     brackets(this.fuelReadout, 'rgba(255,184,77,0.55)');
     this.fuelLabel = el(fuelCol, `font-size:9px;letter-spacing:3px;opacity:0.7;`, 'FUEL %');
 
-    // centre column: speed, gear, odometer
-    const mid = el(cluster, `display:flex;flex-direction:column;align-items:center;
-      padding:0 10px 6px;background-image:radial-gradient(rgba(255,255,255,0.10) 1px, transparent 1px);
-      background-size:11px 11px;background-position:center 12px;background-repeat:round;`);
-    this.mph = el(mid, `font-size:78px;font-weight:300;line-height:0.9;letter-spacing:-1px;
-      color:#fff;text-shadow:0 0 18px rgba(255,255,255,0.35);`, '0');
-    el(mid, `font-size:12px;letter-spacing:7px;opacity:0.8;margin-top:2px;color:#fff;`, 'MPH');
-    this.gear = el(mid, `font-size:16px;letter-spacing:2px;color:${AMBER};margin-top:10px;
-      padding:2px 12px;`, 'G1');
-    brackets(this.gear, 'rgba(255,184,77,0.5)', 5);
-    this.odo = el(mid, `font-size:12px;letter-spacing:2px;opacity:0.62;margin-top:7px;
-      white-space:nowrap;color:#fff;`, '0.0 mi');
+    const speedCluster = el(this.root, `position:absolute;right:272px;bottom:18px;
+      display:flex;align-items:flex-end;gap:16px;`);
+    this.cluster = speedCluster;
 
-    const revCol = el(cluster, `display:flex;flex-direction:column;align-items:center;gap:6px;`);
-    el(revCol, `font-size:9px;letter-spacing:3px;opacity:0.55;color:${RED};`, 'REDLINE');
+    const mid = el(speedCluster, `display:flex;flex-direction:column;align-items:flex-end;`);
+    this.mph = el(mid, `height:58px;display:flex;align-items:center;`, '');
+    el(mid, `font-size:11px;letter-spacing:7px;opacity:0.8;margin-top:6px;color:#fff;`, 'MPH');
+    this.gear = el(mid, `font-size:15px;letter-spacing:2px;color:${AMBER};margin-top:9px;
+      padding:2px 11px;`, 'G1');
+    brackets(this.gear, 'rgba(255,184,77,0.5)', 5);
+
+    const revCol = el(speedCluster, `display:flex;flex-direction:column;align-items:center;gap:5px;`);
+    el(revCol, `font-size:9px;letter-spacing:3px;color:${RED};opacity:0.7;`, 'REDLINE');
     this.revGauge = this.buildArcGauge(revCol, 1);
-    this.revReadout = el(revCol, `font-size:17px;letter-spacing:1px;color:${CYAN};
-      padding:3px 10px;min-width:52px;text-align:center;`, '850');
+    this.revReadout = el(revCol, `padding:3px 9px;`, '');
     brackets(this.revReadout, 'rgba(88,230,255,0.55)');
     el(revCol, `font-size:9px;letter-spacing:3px;opacity:0.7;`, 'RPM');
 
-    // ---- compass rose, bottom-left ----
+    // ---- compass, top-left under integrity ----
     this.buildCompass();
 
-    // ---- integrity, top-left (segmented + bracketed) ----
+    // ---- integrity, top-left ----
     const hBox = el(this.root, `position:absolute;left:34px;top:26px;`);
     el(hBox, `font-size:10px;letter-spacing:5px;margin-bottom:6px;opacity:0.85;`, 'INTEGRITY');
     const hFrame = el(hBox, `padding:5px 7px;`);
@@ -123,36 +154,18 @@ export class Hud {
       this.healthSegs.push(el(hRow, `width:8px;height:12px;background:${CYAN};`));
     }
 
-    // ---- credits + checkpoints, top-right ----
-    const tr = el(this.root, `position:absolute;right:34px;top:26px;text-align:right;
-      display:flex;flex-direction:column;align-items:flex-end;gap:8px;`);
-    this.credits = el(tr, `font-size:15px;letter-spacing:3px;padding:4px 12px;`, 'CREDITS 1');
+    // ---- credits + mileage + checkpoints, top-right ----
+    const tr = el(this.root, `position:absolute;right:34px;top:26px;
+      display:flex;flex-direction:column;align-items:flex-end;gap:7px;`);
+    const trTop = el(tr, `display:flex;align-items:center;gap:10px;`);
+    this.credits = el(trTop, `font-size:15px;letter-spacing:3px;padding:4px 12px;`, 'CREDITS 1');
     brackets(this.credits, 'rgba(255,184,77,0.45)', 5);
+    this.odo = el(trTop, `font-size:15px;letter-spacing:2px;padding:4px 12px;color:#fff;`, '0.0 MI');
+    brackets(this.odo, 'rgba(255,255,255,0.35)', 5);
     this.checkpoints = el(tr, `font-size:15px;letter-spacing:3px;color:${CYAN};padding:4px 12px;`, '');
     brackets(this.checkpoints, 'rgba(88,230,255,0.45)', 5);
-
-    // ---- drive summary, right side ----
-    const ds = el(this.root, `position:absolute;right:34px;top:46%;transform:translateY(-50%);
-      padding:13px 14px;width:158px;box-sizing:border-box;`);
-    this.driveSummary = ds;
-    brackets(ds, 'rgba(255,255,255,0.30)', 8);
-    el(ds, `font-size:10px;letter-spacing:3px;opacity:0.8;text-align:center;margin-bottom:10px;
-      color:#fff;white-space:nowrap;`, 'DRIVE SUMMARY');
-    const dsRow = (glyph: string) => {
-      const r = el(ds, `display:flex;align-items:center;justify-content:space-between;
-        gap:14px;margin-top:9px;`);
-      el(r, `font-size:15px;opacity:0.65;`, glyph);
-      const v = el(r, `text-align:right;`);
-      const num = el(v, `font-size:19px;font-weight:300;color:#fff;line-height:1;`, '0.0');
-      const unit = el(v, `font-size:10px;letter-spacing:1px;color:${AMBER};margin-top:2px;`, '');
-      return { num, unit };
-    };
-    const rTrip = dsRow('&#10230;');
-    const rOdo = dsRow('&#9186;');
-    const rTime = dsRow('&#9201;');
-    this.dsTrip = rTrip.num; rTrip.unit.textContent = 'mi trip';
-    this.dsOdo = rOdo.num; rOdo.unit.textContent = 'mi total';
-    this.dsTime = rTime.num; rTime.unit.textContent = 'min:sec';
+    this.tripLine = el(tr, `font-size:10px;letter-spacing:2px;opacity:0.6;color:#fff;`,
+      'TRIP 0.0 MI &middot; 0:00');
 
     // boundary warning, top-center
     this.warning = el(this.root, `position:absolute;left:50%;transform:translateX(-50%);top:56px;
@@ -227,11 +240,11 @@ export class Hud {
     this.hintEl.innerHTML =
       'ON-SCREEN PEDALS &nbsp; DRIFT = HANDBRAKE<br/>&#10227; FLIP RESCUE &nbsp; &#10074;&#10074; PAUSE &nbsp; RUN THE BLUE RINGS';
     // compact the cluster and hide the side panels: thumbs need the corners
-    this.mph.style.fontSize = '48px';
-    this.cluster.style.bottom = '96px';
-    this.cluster.style.transform = 'translateX(-50%) scale(0.72)';
-    this.cluster.style.transformOrigin = 'bottom center';
-    this.driveSummary.style.display = 'none';
+    this.cluster.style.bottom = '104px';
+    this.cluster.style.right = '18px';
+    this.cluster.style.transform = 'scale(0.74)';
+    this.cluster.style.transformOrigin = 'bottom right';
+    this.tripLine.style.display = 'none';
   }
 
   /** bowed segmented column — the signature gauge of the cluster.
@@ -305,17 +318,16 @@ export class Hud {
   setRev(rpm: number, gear: number) {
     const r = Math.max(0, Math.min(MAX_RPM, rpm));
     this.fillGauge(this.revGauge, r / MAX_RPM, CYAN, REDLINE_RPM / MAX_RPM);
-    this.revReadout.textContent = String(Math.round(r));
-    this.revReadout.style.color = r >= REDLINE_RPM ? RED : CYAN;
+    this.revReadout.innerHTML =
+      `<i></i>` + numerals(Math.round(r), 13, r >= REDLINE_RPM ? RED : CYAN, 1.5, 1.9);
     void gear;
   }
 
   /** trip + lifetime distance, in miles */
   setOdo(tripMeters: number, totalMeters: number) {
     const mi = (m: number) => (m / 1609.34).toFixed(1);
-    this.odo.textContent = `${mi(totalMeters)} mi`;
-    this.dsTrip.textContent = mi(tripMeters);
-    this.dsOdo.textContent = mi(totalMeters);
+    this.odo.innerHTML = `<i></i>${mi(totalMeters)} MI`;
+    this.tripMiles = mi(tripMeters);
   }
 
   /** elapsed run time for the drive summary */
@@ -323,19 +335,21 @@ export class Hud {
     this.runSeconds = seconds;
     const m = Math.floor(seconds / 60);
     const sec = Math.floor(seconds % 60);
-    this.dsTime.textContent = `${m}:${String(sec).padStart(2, '0')}`;
+    this.tripLine.innerHTML =
+      `TRIP ${this.tripMiles} MI &middot; ${m}:${String(sec).padStart(2, '0')}`;
   }
 
   setSpeed(mph: number, gear: string) {
-    this.mph.textContent = String(Math.round(Math.abs(mph)));
-    this.gear.textContent = gear;
+    // drawn numerals, sized to match the old 78px system face
+    this.mph.innerHTML = numerals(Math.round(Math.abs(mph)), 58, '#fff', 1.05, 2.1);
+    this.gear.innerHTML = `<i></i>${gear}`;
   }
   setFuel(f01: number) {
     const pc = Math.max(0, Math.min(1, f01));
     const low = pc < 0.22;
     this.fillGauge(this.fuelGauge, pc, low ? RED : AMBER);
-    this.fuelReadout.textContent = String(Math.round(pc * 100));
-    this.fuelReadout.style.color = low ? RED : AMBER;
+    this.fuelReadout.innerHTML =
+      `<i></i>` + numerals(Math.round(pc * 100), 13, low ? RED : AMBER, 1.5, 1.9);
     this.fuelLabel.style.color = low ? RED : AMBER;
   }
   setHealth(h01: number) {
