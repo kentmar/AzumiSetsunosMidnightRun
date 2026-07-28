@@ -361,6 +361,13 @@ export class CrashSystem {
     }
   }
 
+  /** after a teleport or a scripted velocity flip: re-baseline the impact
+   *  detector, or the frame's apparent delta-v reads as a head-on crash */
+  resync(grace = 0.4) {
+    this.vehicle.velocity(this.prevVel);
+    this.graceT = Math.max(this.graceT, grace);
+  }
+
   /** continue-for-a-credit: fresh car */
   repair() {
     for (const d of this.detached) {

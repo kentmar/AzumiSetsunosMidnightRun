@@ -12,7 +12,7 @@ import { Input } from './input';
 import { TouchControls, IS_TOUCH } from './touch';
 import { Particles } from './particles';
 import { Sky } from './sky';
-import { City, FOG, SPAWN, META, nearestEdgePoint, EDGES } from './city';
+import { City, FOG, SPAWN, META, nearestEdgePoint, EDGES, elevationAt } from './city';
 import { PlayerVehicle } from './vehicle';
 import { CrashSystem } from './crash';
 import { ChaseCamera } from './camera';
@@ -166,7 +166,7 @@ async function boot() {
         blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
       })
     );
-    m.position.set(x, 22, z);
+    m.position.set(x, elevationAt(x, z) + 22, z);
     flagMarkers.add(m);
   };
   for (const f of gmFlags) addFlagBeacon(f.x, f.z);
@@ -352,7 +352,7 @@ async function boot() {
 
   // debug/inspection handle (dev only)
   (window as unknown as Record<string, unknown>).NR = {
-    game, vehicle, crash, chase, world, scene, traffic, minimap,
+    game, vehicle, crash, chase, world, scene, traffic, minimap, city, elevationAt,
   };
 }
 

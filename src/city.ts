@@ -69,8 +69,19 @@ export const WATER_Y = 2.6;
 // heading toward NJ (−x). Only the short ramp where the floor is still above
 // y=−1 needs a hole in the ground slab; past that the car is simply beneath it.
 const TUN = { W: 18, RAMP0: 3, RAMP1: 30, BOTTOM: -7.5, CEIL: 6.8 };
-const tunFloorY = (s: number) =>
-  s <= TUN.RAMP0 ? 0 : s >= TUN.RAMP1 ? TUN.BOTTOM : (TUN.BOTTOM * (s - TUN.RAMP0)) / (TUN.RAMP1 - TUN.RAMP0);
+/** Ramp length scales with the drop so the grade stays constant (~12%). With
+ *  real terrain the mouth can sit 10 m up, and a fixed-length ramp would turn
+ *  into a 30-degree cliff the car launches off. */
+const tunRampEnd = (mouthY: number) =>
+  TUN.RAMP0 + Math.max(26, (mouthY - TUN.BOTTOM) * 4.5);
+/** bore floor at s metres in, ramping from the mouth's real street elevation
+ *  down to the (absolute) sub-layer depth */
+const tunFloorY = (s: number, mouthY = 0, rampEnd = TUN.RAMP1) =>
+  s <= TUN.RAMP0
+    ? mouthY
+    : s >= rampEnd
+      ? TUN.BOTTOM
+      : mouthY + (TUN.BOTTOM - mouthY) * ((s - TUN.RAMP0) / (rampEnd - TUN.RAMP0));
 
 export interface TunnelPortal {
   name: string;
@@ -136,7 +147,9 @@ export function edgePoint(ei: number, s: number, out: THREE.Vector3): THREE.Vect
   const f = (t - cum[k - 1]) / segLen;
   const p0 = e.pts[k - 1];
   const p1 = e.pts[k];
-  return out.set(p0[0] + (p1[0] - p0[0]) * f, 0, p0[1] + (p1[1] - p0[1]) * f);
+  const ex = p0[0] + (p1[0] - p0[0]) * f;
+  const ez = p0[1] + (p1[1] - p0[1]) * f;
+  return out.set(ex, elevationAt(ex, ez), ez);
 }
 
 /** unit direction at s meters along an edge (in pts order) */
@@ -430,7 +443,8 @@ export class City {
   /** open-cut approach: no buildings may stand over a tunnel mouth */
   private tunnelClears: { x0: number; x1: number; z0: number; z1: number }[] = [];
   /** bore centrelines, for the underground rescue */
-  private bores: { mouthX: number; mouthZ: number; dir: number; len: number }[] = [];
+  private bores: { mouthX: number; mouthZ: number; mouthY: number; rampEnd: number; dir: number; len: number }[] = [];
+  private buildingList: { pts: [number, number][]; h: number; s: number; name?: string }[] | null = null;
   // GM ghost-delete support: per-building collider + vertex range in the merged geometry
   private world!: RAPIER_API.World;
   private buildingsGeo!: THREE.BufferGeometry;
@@ -453,7 +467,7 @@ export class City {
       if (NODE_DEGREE[i] >= 3) {
         const [x, z] = NODES[i];
         if (x > BORDER.minX + 60 && x < BORDER.maxX - 60 && z > BORDER.minZ + 60 && z < BORDER.maxZ - 60) {
-          this.intersections.push(new THREE.Vector3(x, 0, z));
+          this.intersections.push(new THREE.Vector3(x, elevationAt(x, z), z));
         }
       }
     }
@@ -536,14 +550,8 @@ export class City {
           gl_FragColor = vec4(mix(col, uFogColor, clamp(fogF, 0.0, 1.0)), 1.0);
         }`,
     });
-    const groundSize = MAP_EDGE * 2 + 900;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(groundSize, groundSize), groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.02;
-    scene.add(ground);
-    // locate the tunnel mouths up front; carve a small hole in the ground slab
-    // where the Lincoln ramp drops below street level (rest of the bore is
-    // simply beneath the slab, so no hole needed there)
+    // Tunnel mouths are resolved BEFORE the ground is built: the terrain mesh
+    // has to leave holes where the bores break the surface.
     this.portals = findTunnelPortals();
     // line each bore up with the real cross-street it belongs to, so the mouth
     // sits ON the road rather than beside it (Lincoln -> West 38th Street)
@@ -583,29 +591,8 @@ export class City {
       });
     }
 
-    const gBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    const G = groundSize / 2;
-    const addGround = (cx: number, cz: number, hx: number, hz: number) => {
-      if (hx <= 0 || hz <= 0) return;
-      const c = world.createCollider(
-        RAPIER.ColliderDesc.cuboid(hx, 0.5, hz).setTranslation(cx, -0.5, cz), gBody
-      );
-      c.setCollisionGroups(groups(G_GROUND, G_ALL));
-      c.setFriction(1.0);
-    };
-    // slab minus each tunnel hole: full-height strips between the holes, and
-    // z-bands above/below inside each hole's x-range (holes are disjoint in x)
-    const addBox = (x0: number, x1: number, z0: number, z1: number) =>
-      addGround((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2);
-    const holes = [...this.tunnelHoles].sort((a, b) => a.x0 - b.x0);
-    let cursor = -G;
-    for (const h of holes) {
-      if (h.x0 > cursor) addBox(cursor, h.x0, -G, G);
-      addBox(h.x0, h.x1, -G, h.z0);
-      addBox(h.x0, h.x1, h.z1, G);
-      cursor = Math.max(cursor, h.x1);
-    }
-    addBox(cursor, G, -G, G);
+    this.computeShoreline(); // the terrain needs it to carve the riverbed
+    this.buildTerrain(scene, world, RAPIER, groundMat);
 
     // matte near-black fill; the glow comes from edge lines + markings
     this.roadMat = new THREE.MeshStandardMaterial({
@@ -628,6 +615,15 @@ export class City {
     this.debugScene = scene;
   }
 
+  /** is this point inside a tunnel bore? */
+  inTunnel(p: THREE.Vector3): boolean {
+    for (const b of this.bores) {
+      const s = (p.x - b.mouthX) * b.dir;
+      if (s >= -12 && s <= b.len && Math.abs(p.z - b.mouthZ) <= TUN.W) return true;
+    }
+    return false;
+  }
+
   /** if p is inside a tunnel bore, a safe spot back on its centreline facing
    *  out toward the city (used by rescue — the surface reset strands you) */
   tunnelRescue(p: THREE.Vector3): { pos: THREE.Vector3; yaw: number } | null {
@@ -637,7 +633,7 @@ export class City {
       if (Math.abs(p.z - b.mouthZ) > TUN.W) continue;
       const sc = THREE.MathUtils.clamp(s, 2, b.len - 14);
       return {
-        pos: new THREE.Vector3(b.mouthX + b.dir * sc, tunFloorY(sc) + 1.2, b.mouthZ),
+        pos: new THREE.Vector3(b.mouthX + b.dir * sc, tunFloorY(sc, b.mouthY, b.rampEnd) + 1.2, b.mouthZ),
         yaw: Math.atan2(-b.dir, 0), // face back out toward the mouth
       };
     }
@@ -715,12 +711,12 @@ export class City {
   setDebug(on: boolean) {
     if (on && !this.debugLines) {
       const pos: number[] = [];
-      const Y = 0.3;
+      const Y = 0.3; // GM collider outlines ride the terrain
       for (const hull of this.hulls) {
         for (let i = 0; i < hull.length; i++) {
           const [x1, z1] = hull[i];
           const [x2, z2] = hull[(i + 1) % hull.length];
-          pos.push(x1, Y, z1, x2, Y, z2);
+          pos.push(x1, elevationAt(x1, z1) + Y, z1, x2, elevationAt(x2, z2) + Y, z2);
         }
       }
       const geo = new THREE.BufferGeometry();
@@ -739,6 +735,88 @@ export class City {
       this.debugScene.add(this.debugLines);
     }
     if (this.debugLines) this.debugLines.visible = on;
+  }
+
+  /** real-elevation terrain: one displaced grid shared by render and physics.
+   *  Cells that touch a tunnel mouth are subdivided to 2 m so the holes stay
+   *  tight; the coarse/fine seam is safe because XZ coverage stays complete
+   *  (a downward wheel ray always lands on a triangle). */
+  private buildTerrain(
+    scene: THREE.Scene,
+    world: RAPIER_API.World,
+    RAPIER: typeof RAPIER_API,
+    mat: THREE.Material
+  ) {
+    // The elevation tiles carry no bathymetry — piers and fill read as land at
+    // 2-3 m, which would leave a "drowned" car sitting above the waterline. Past
+    // the seawall the ground ramps down into a real basin instead.
+    const RIVERBED = -5;
+    const surfaceY = (x: number, z: number) => {
+      const w = this.shoreWest(z), e = this.shoreEast(z);
+      const out = x < w ? w - x : x > e ? x - e : 0;
+      if (out <= 0) return elevationAt(x, z);
+      const t = Math.min(1, out / 30);
+      return elevationAt(x, z) * (1 - t) + RIVERBED * t;
+    };
+    const G = (MAP_EDGE * 2 + 900) / 2;
+    const CELL = 32;
+    const SUB = 16; // 2 m around the portals
+    const n = Math.ceil((2 * G) / CELL);
+    const pos: number[] = [];
+    const idx: number[] = [];
+    const seen = new Map<number, number>();
+    const vert = (x: number, z: number) => {
+      const k = Math.round(x * 4) * 1e6 + Math.round(z * 4);
+      let i = seen.get(k);
+      if (i === undefined) {
+        i = pos.length / 3;
+        pos.push(x, surfaceY(x, z), z);
+        seen.set(k, i);
+      }
+      return i;
+    };
+    const quad = (x0: number, x1: number, z0: number, z1: number) => {
+      const a = vert(x0, z0), b = vert(x1, z0), c = vert(x1, z1), d = vert(x0, z1);
+      idx.push(a, b, c, a, c, d);
+    };
+    const hitsHole = (x0: number, x1: number, z0: number, z1: number) =>
+      this.tunnelHoles.some((h) => x1 > h.x0 && x0 < h.x1 && z1 > h.z0 && z0 < h.z1);
+
+    for (let i = 0; i < n; i++) {
+      const x0 = -G + i * CELL, x1 = x0 + CELL;
+      for (let j = 0; j < n; j++) {
+        const z0 = -G + j * CELL, z1 = z0 + CELL;
+        if (!hitsHole(x0, x1, z0, z1)) {
+          quad(x0, x1, z0, z1);
+          continue;
+        }
+        const s = CELL / SUB;
+        for (let a = 0; a < SUB; a++) {
+          for (let b = 0; b < SUB; b++) {
+            const sx = x0 + a * s, sz = z0 + b * s;
+            if (!hitsHole(sx, sx + s, sz, sz + s)) quad(sx, sx + s, sz, sz + s);
+          }
+        }
+      }
+    }
+
+    const verts = new Float32Array(pos);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(verts.slice(), 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.y = -0.05; // sit just under the physics surface so roads read
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const coll = world.createCollider(
+      RAPIER.ColliderDesc.trimesh(verts, new Uint32Array(idx)),
+      body
+    );
+    coll.setCollisionGroups(groups(G_GROUND, G_ALL));
+    coll.setFriction(1.0);
   }
 
   /** rivers as two strips that start exactly AT the seawall fence line — the
@@ -846,7 +924,7 @@ export class City {
     for (const d of spots) {
       const mat = this.makeWarnMat();
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(d.w, H), mat);
-      mesh.position.set(d.x, H / 2, d.z);
+      mesh.position.set(d.x, elevationAt(d.x, d.z) + H / 2, d.z);
       mesh.frustumCulled = false;
       scene.add(mesh);
       this.walls.push({ mat, cx: d.x, cz: d.z });
@@ -908,16 +986,18 @@ export class City {
     const lpos: number[] = [];
     for (let i = 0; i < boxes.length; i++) {
       const b = boxes[i];
-      m4.makeScale(b.w, b.h, b.d).setPosition(b.x, b.h / 2, b.z);
+      const g = elevationAt(b.x, b.z);
+      const top = g + b.h;
+      m4.makeScale(b.w, b.h, b.d).setPosition(b.x, g + b.h / 2, b.z);
       fill.setMatrixAt(i, m4);
       // vertical + roof edge lines only (silhouette wireframe, half the verts)
       const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2;
       const z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
       for (const [ex, ez] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]] as [number, number][]) {
-        lpos.push(ex, 0, ez, ex, b.h, ez);
+        lpos.push(ex, g - 2, ez, ex, top, ez);
       }
-      lpos.push(x0, b.h, z0, x1, b.h, z0, x1, b.h, z0, x1, b.h, z1);
-      lpos.push(x1, b.h, z1, x0, b.h, z1, x0, b.h, z1, x0, b.h, z0);
+      lpos.push(x0, top, z0, x1, top, z0, x1, top, z0, x1, top, z1);
+      lpos.push(x1, top, z1, x0, top, z1, x0, top, z1, x0, top, z0);
     }
     fill.instanceMatrix.needsUpdate = true;
     scene.add(fill);
@@ -937,9 +1017,10 @@ export class City {
       if (b.row > 1) continue;
       const nWin = Math.floor(rand(0, b.row === 0 ? 4 : 2.4));
       const faceZ = b.z - b.side * (b.d / 2 + 0.25); // face toward the playfield
+      const gw = elevationAt(b.x, b.z);
       for (let k = 0; k < nWin; k++) {
         const wx = rand(b.x - b.w / 2 + 2, b.x + b.w / 2 - 3.6);
-        const wy = rand(3, Math.max(4, b.h - 4));
+        const wy = gw + rand(3, Math.max(4, b.h - 4));
         const vi = wpos.length / 3;
         wpos.push(wx, wy, faceZ, wx + 1.7, wy, faceZ, wx + 1.7, wy + 2.3, faceZ, wx, wy + 2.3, faceZ);
         widx.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
@@ -956,7 +1037,9 @@ export class City {
   }
 
   /** breakable amber fence along the marched real shoreline (both rivers) */
-  private buildShoreFence(scene: THREE.Scene) {
+  /** march the DEM + outermost highway per z-band to find both shorelines.
+   *  Runs before the terrain so the riverbed can be carved beyond them. */
+  private computeShoreline() {
     const step = this.shoreDz;
     // DEM march (west margin is pier-smeared, so its threshold is looser)…
     const march = (dir: -1 | 1, thresh: number): number[] => {
@@ -1007,7 +1090,11 @@ export class City {
     };
     this.shoreWArr = combine(mW, wRoad, -1);
     this.shoreEArr = combine(mE, eRoad, 1);
+  }
 
+  /** breakable amber fence along the marched shoreline (both rivers) */
+  private buildShoreFence(scene: THREE.Scene) {
+    const step = this.shoreDz;
     const lpos: number[] = [];
     const segs: { x: number; z: number; vStart: number; vCount: number; alive: boolean }[] = [];
     const addSide = (arr: number[]) => {
@@ -1016,9 +1103,10 @@ export class City {
         if (!isFinite(x1) || !isFinite(x2) || Math.abs(x2 - x1) > 60) continue;
         const z1 = BORDER.minZ + k * step, z2 = z1 + step;
         const vStart = lpos.length / 3;
-        lpos.push(x1, 0.55, z1, x2, 0.55, z2);
-        lpos.push(x1, 1.15, z1, x2, 1.15, z2);
-        lpos.push(x1, 0, z1, x1, 1.35, z1);
+        const g1 = elevationAt(x1, z1), g2 = elevationAt(x2, z2);
+        lpos.push(x1, g1 + 0.55, z1, x2, g2 + 0.55, z2);
+        lpos.push(x1, g1 + 1.15, z1, x2, g2 + 1.15, z2);
+        lpos.push(x1, g1, z1, x1, g1 + 1.35, z1);
         segs.push({ x: (x1 + x2) / 2, z: (z1 + z2) / 2, vStart, vCount: lpos.length / 3 - vStart, alive: true });
       }
     };
@@ -1049,15 +1137,17 @@ export class City {
     world: RAPIER_API.World,
     RAPIER: typeof RAPIER_API
   ) {
-    const { W, RAMP1, BOTTOM, CEIL } = TUN;
+    const { W, BOTTOM, CEIL } = TUN;
     const dir = portal.dir ?? -1;
     const mouthX = portal.pos.x, mouthZ = portal.pos.z;
+    const mouthY = elevationAt(mouthX, mouthZ); // the ramp starts at street level
+    const RAMP1 = tunRampEnd(mouthY);
     const endX = dir < 0 ? BORDER.minX - 220 : BORDER.maxX + 220; // out past the water
     const LEN = Math.abs(endX - mouthX);
     const zL = mouthZ - W / 2, zR = mouthZ + W / 2;
     const cx = (s: number) => mouthX + dir * s;
     const COVER = 28; // roof only starts once the ceiling clears street level
-    this.bores.push({ mouthX, mouthZ, dir, len: LEN });
+    this.bores.push({ mouthX, mouthZ, mouthY, rampEnd: RAMP1, dir, len: LEN });
 
     const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
     const floorPos: number[] = [], floorIdx: number[] = [];
@@ -1077,12 +1167,12 @@ export class City {
     samples.push(LEN);
 
     for (let i = 0; i < samples.length; i++) {
-      const s = samples[i], x = cx(s), fy = tunFloorY(s), cy = fy + CEIL;
+      const s = samples[i], x = cx(s), fy = tunFloorY(s, mouthY, RAMP1), cy = fy + CEIL;
       const top = Math.min(cy, 0); // open cut near the mouth
       ribPos.push(x, fy, zL, x, top, zL, x, fy, zR, x, top, zR);
       if (cy <= 0) ribPos.push(x, cy, zL, x, cy, zR);
       if (i === 0) continue;
-      const ps = samples[i - 1], pX = cx(ps), pfy = tunFloorY(ps);
+      const ps = samples[i - 1], pX = cx(ps), pfy = tunFloorY(ps, mouthY, RAMP1);
       const pcy = pfy + CEIL, pTop = Math.min(pcy, 0);
       quad(floorPos, floorIdx, [pX, pfy, zL], [x, fy, zL], [x, fy, zR], [pX, pfy, zR]);
       quad(shellPos, shellIdx, [pX, pfy, zL], [x, fy, zL], [x, top, zL], [pX, pTop, zL]);
@@ -1096,9 +1186,9 @@ export class City {
 
     // street-level apron: the ground hole opens just short of the bore start,
     // so the floor must reach back past the lip or the car drops through
-    quad(floorPos, floorIdx, [mouthX - dir * 8, 0, zL], [mouthX, 0, zL], [mouthX, 0, zR], [mouthX - dir * 8, 0, zR]);
+    quad(floorPos, floorIdx, [mouthX - dir * 8, mouthY, zL], [mouthX, mouthY, zL], [mouthX, mouthY, zR], [mouthX - dir * 8, mouthY, zR]);
     const apron = world.createCollider(
-      RAPIER.ColliderDesc.cuboid(4.5, 0.25, W / 2).setTranslation(mouthX - dir * 3.5, -0.22, mouthZ),
+      RAPIER.ColliderDesc.cuboid(4.5, 0.25, W / 2).setTranslation(mouthX - dir * 3.5, mouthY - 0.22, mouthZ),
       body
     );
     apron.setCollisionGroups(groups(G_GROUND, G_ALL));
@@ -1107,7 +1197,7 @@ export class City {
     // ramp floor colliders (tilted), then one long flat slab for the run out
     for (let s = 0; s < RAMP1; s += 3) {
       const s2 = Math.min(s + 3, RAMP1);
-      const y1 = tunFloorY(s), y2 = tunFloorY(s2);
+      const y1 = tunFloorY(s, mouthY, RAMP1), y2 = tunFloorY(s2, mouthY, RAMP1);
       const ddx = cx(s2) - cx(s), ddy = y2 - y1;
       const segLen = Math.hypot(ddx, ddy);
       const ang = Math.atan2(ddy, ddx);
@@ -1132,7 +1222,7 @@ export class City {
     // block surface traffic, full height once the bore is roofed
     for (const zSide of [zL - 0.4, zR + 0.4]) {
       const openW = world.createCollider(
-        RAPIER.ColliderDesc.cuboid(COVER / 2, 4, 0.4).setTranslation(mouthX + dir * (COVER / 2), -4, zSide),
+        RAPIER.ColliderDesc.cuboid(COVER / 2, 4, 0.4).setTranslation(mouthX + dir * (COVER / 2), mouthY - 4, zSide),
         body
       );
       openW.setCollisionGroups(groups(G_BUILDING, G_ALL));
@@ -1169,7 +1259,7 @@ export class City {
     // dashed centre line — sells the two-way bore
     const lane: number[] = [];
     for (let s = 6; s < LEN - 6; s += 9) {
-      lane.push(cx(s), tunFloorY(s) + 0.05, mouthZ, cx(s + 4.5), tunFloorY(s + 4.5) + 0.05, mouthZ);
+      lane.push(cx(s), tunFloorY(s, mouthY, RAMP1) + 0.05, mouthZ, cx(s + 4.5), tunFloorY(s + 4.5, mouthY, RAMP1) + 0.05, mouthZ);
     }
     const laneLines = new THREE.LineSegments(
       new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(lane, 3)),
@@ -1207,7 +1297,7 @@ export class City {
 
     // street mouth is where the OTHER tunnel's wall delivers you; pos becomes
     // this tunnel's light wall (the warp trigger)
-    portal.mouth = new THREE.Vector3(mouthX, 0, mouthZ);
+    portal.mouth = new THREE.Vector3(mouthX, mouthY, mouthZ);
     portal.pos.set(wx, BOTTOM, mouthZ);
   }
 
@@ -1220,7 +1310,7 @@ export class City {
     const glowTex = makeGlowTexture();
     for (const p of this.portals) {
       const g = new THREE.Group();
-      g.position.copy(p.pos);
+      g.position.set(p.pos.x, elevationAt(p.pos.x, p.pos.z), p.pos.z);
       g.rotation.y = p.exitYaw;
       const dark = new THREE.MeshStandardMaterial({
         color: 0x0a0c12, roughness: 0.6,
@@ -1261,7 +1351,7 @@ export class City {
       const e = EDGES[ei];
       const half = e.w / 2;
       const base = pos.length / 3;
-      let px1 = 0, pz1 = 0, px2 = 0, pz2 = 0;
+      let px1 = 0, pz1 = 0, py1 = 0, px2 = 0, pz2 = 0, py2 = 0;
       for (let k = 0; k < e.pts.length; k++) {
         // averaged direction at the point for smooth joins
         const p = e.pts[k];
@@ -1274,12 +1364,14 @@ export class City {
         const nx = dz, nz = -dx; // perpendicular
         const x1 = p[0] + nx * half, z1 = p[1] + nz * half;
         const x2 = p[0] - nx * half, z2 = p[1] - nz * half;
-        pos.push(x1, Y, z1, x2, Y, z2);
+        const y1 = elevationAt(x1, z1) + Y, y2 = elevationAt(x2, z2) + Y;
+        pos.push(x1, y1, z1, x2, y2, z2);
         if (k > 0) {
-          lpos.push(px1, 0.05, pz1, x1, 0.05, z1);
-          lpos.push(px2, 0.05, pz2, x2, 0.05, z2);
+          lpos.push(px1, py1 + 0.034, pz1, x1, y1 + 0.034, z1);
+          lpos.push(px2, py2 + 0.034, pz2, x2, y2 + 0.034, z2);
         }
-        px1 = x1; pz1 = z1; px2 = x2; pz2 = z2;
+        px1 = x1; pz1 = z1; py1 = y1;
+        px2 = x2; pz2 = z2; py2 = y2;
       }
       for (let k = 0; k < e.pts.length - 1; k++) {
         // don't pave over a tunnel's open cut — the street has to end at the
@@ -1377,7 +1469,7 @@ export class City {
     const up = new THREE.Vector3(0, 1, 0);
     dashes.forEach((it, i) => {
       q.setFromAxisAngle(up, it.yaw);
-      m.compose(new THREE.Vector3(it.x, 0.03, it.z), q, new THREE.Vector3(1, 1, 1));
+      m.compose(new THREE.Vector3(it.x, elevationAt(it.x, it.z) + 0.09, it.z), q, new THREE.Vector3(1, 1, 1));
       inst.setMatrixAt(i, m);
       inst.setColorAt(i, it.c);
     });
@@ -1388,6 +1480,18 @@ export class City {
   /** procedural infill for the sparse northern band so the top edge reads
    *  dense "all the way across" (GM-flagged around W40th). Footprints avoid
    *  roads + existing buildings; they get real colliders, windows, glitch. */
+  /** baked + procedural buildings, computed once so geometry, colliders and
+   *  the wireframe pass all see exactly the same set */
+  private allBuildings(): { pts: [number, number][]; h: number; s: number; name?: string }[] {
+    if (!this.buildingList) {
+      this.buildingList = [
+        ...(DATA.buildings as { pts: [number, number][]; h: number; s: number; name?: string }[]),
+        ...this.northInfill(),
+      ];
+    }
+    return this.buildingList;
+  }
+
   private northInfill(): { pts: [number, number][]; h: number; s: number }[] {
     const out: { pts: [number, number][]; h: number; s: number }[] = [];
     const zLo = BORDER.minZ + 6;
@@ -1436,7 +1540,7 @@ export class City {
     this.world = world;
 
     const clears = this.tunnelClears;
-    for (const b of [...DATA.buildings, ...this.northInfill()]) {
+    for (const b of this.allBuildings()) {
       // nothing may stand over a tunnel portal approach
       if (clears.length) {
         const p = b.pts as [number, number][];
@@ -1457,7 +1561,16 @@ export class City {
       }
       if (area < 0) pts = [...pts].reverse();
 
-      const h = b.h;
+      // sit on the terrain: base sinks a skirt below the lowest footprint
+      // corner so nothing floats on a grade, roof rides the local elevation
+      let gLo = 1e9, gHi = -1e9;
+      for (const [x, z] of pts) {
+        const g = elevationAt(x, z);
+        if (g < gLo) gLo = g;
+        if (g > gHi) gHi = g;
+      }
+      const baseY = gLo - 4;
+      const h = gHi + b.h;
       let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
 
       for (let i = 0; i < pts.length; i++) {
@@ -1469,7 +1582,7 @@ export class City {
         const len = Math.hypot(dx, dz) || 1;
         const nx = dz / len, nz = -dx / len;
         const vi = pos.length / 3;
-        pos.push(x1, 0, z1, x2, 0, z2, x2, h, z2, x1, h, z1);
+        pos.push(x1, baseY, z1, x2, baseY, z2, x2, h, z2, x1, h, z1);
         nor.push(nx, 0, nz, nx, 0, nz, nx, 0, nz, nx, 0, nz);
         seed.push(b.s, b.s, b.s, b.s);
         idx.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
@@ -1497,7 +1610,7 @@ export class City {
         const nv = pts.length;
         const verts = new Float32Array(nv * 2 * 3);
         for (let i = 0; i < nv; i++) {
-          verts.set([pts[i][0], 0, pts[i][1]], i * 3);
+          verts.set([pts[i][0], baseY, pts[i][1]], i * 3);
           verts.set([pts[i][0], h, pts[i][1]], (nv + i) * 3);
         }
         const indices: number[] = [];
@@ -1511,13 +1624,13 @@ export class City {
         const hull = convexHull2D(pts);
         const verts = new Float32Array(hull.length * 2 * 3);
         hull.forEach(([hx, hz], k) => {
-          verts.set([hx, 0, hz], k * 6);
+          verts.set([hx, baseY, hz], k * 6);
           verts.set([hx, h, hz], k * 6 + 3);
         });
         desc =
           RAPIER.ColliderDesc.convexHull(verts) ??
-          RAPIER.ColliderDesc.cuboid((maxX - minX) / 2, h / 2, (maxZ - minZ) / 2)
-            .setTranslation((minX + maxX) / 2, h / 2, (minZ + maxZ) / 2);
+          RAPIER.ColliderDesc.cuboid((maxX - minX) / 2, (h - baseY) / 2, (maxZ - minZ) / 2)
+            .setTranslation((minX + maxX) / 2, (h + baseY) / 2, (minZ + maxZ) / 2);
         this.hulls.push(hull);
       }
       const coll = world.createCollider(desc, wallBody);
@@ -1566,9 +1679,15 @@ export class City {
       col.push(c.r, c.g, c.b, c.r, c.g, c.b);
     };
 
-    for (const b of DATA.buildings) {
+    for (const b of this.allBuildings()) {
       const pts = b.pts as [number, number][];
-      const h = b.h;
+      let gLo = 1e9, gHi = -1e9;
+      for (const [x, z] of pts) {
+        const g = elevationAt(x, z);
+        if (g < gLo) gLo = g;
+        if (g > gHi) gHi = g;
+      }
+      const h = gHi + b.h;
       const named = 'name' in b && !!(b as { name?: string }).name;
       // landmarks glow amber; the rest vary in cyan intensity per building
       const glow = named ? 1.0 : 0.28 + (b.s % 10) * 0.05;
@@ -1577,14 +1696,14 @@ export class City {
       for (let i = 0; i < pts.length; i++) {
         const [x1, z1] = pts[i];
         const [x2, z2] = pts[(i + 1) % pts.length];
-        pushLine(x1, 0, z1, x1, h, z1); // vertical corner
+        pushLine(x1, gLo - 1, z1, x1, h, z1); // vertical corner
         pushLine(x1, h, z1, x2, h, z2); // roofline
-        pushLine(x1, 0.05, z1, x2, 0.05, z2); // ground ring
+        pushLine(x1, elevationAt(x1, z1) + 0.06, z1, x2, elevationAt(x2, z2) + 0.06, z2); // ground ring
       }
       // floor rings for the scan-line read; capped so towers stay cheap
-      const rings = Math.min(6, Math.floor(h / 18));
+      const rings = Math.min(6, Math.floor(b.h / 18));
       for (let r = 1; r <= rings; r++) {
-        const y = (h / (rings + 1)) * r;
+        const y = gHi + (b.h / (rings + 1)) * r;
         const dim = 0.35;
         const cr = c.r * dim, cg = c.g * dim, cb = c.b * dim;
         for (let i = 0; i < pts.length; i++) {
@@ -1728,11 +1847,12 @@ export class City {
     );
     const m = new THREE.Matrix4();
     positions.forEach((pt, i) => {
-      m.makeTranslation(pt.x, 0, pt.z);
+      const g = elevationAt(pt.x, pt.z);
+      m.makeTranslation(pt.x, g, pt.z);
       poles.setMatrixAt(i, m);
-      m.makeTranslation(pt.x + pt.ox * 0.9, 5.65, pt.z + pt.oz * 0.9);
+      m.makeTranslation(pt.x + pt.ox * 0.9, g + 5.65, pt.z + pt.oz * 0.9);
       heads.setMatrixAt(i, m);
-      m.makeTranslation(pt.x + pt.ox * 0.9, 0.06, pt.z + pt.oz * 0.9);
+      m.makeTranslation(pt.x + pt.ox * 0.9, g + 0.06, pt.z + pt.oz * 0.9);
       glows.setMatrixAt(i, m);
     });
     scene.add(poles, heads, glows);
@@ -1761,11 +1881,12 @@ export class City {
       for (const ei of NODE_EDGES[ni]) r = Math.max(r, EDGES[ei].w / 2 + 2);
       const px = x + r * 0.7;
       const pz = z + r * 0.7;
-      m.makeTranslation(px, 0, pz);
+      const g = elevationAt(px, pz);
+      m.makeTranslation(px, g, pz);
       poles.setMatrixAt(i, m);
-      m.makeTranslation(px, 4.4, pz - 0.5);
+      m.makeTranslation(px, g + 4.4, pz - 0.5);
       this.nsHeads.setMatrixAt(i, m);
-      m.makeTranslation(px - 0.5, 4.4, pz);
+      m.makeTranslation(px - 0.5, g + 4.4, pz);
       this.ewHeads.setMatrixAt(i, m);
     });
     scene.add(poles, this.nsHeads, this.ewHeads);
@@ -1816,6 +1937,7 @@ export class City {
       const d = edgeDir(ei, EDGE_LEN[ei] / 2, new THREE.Vector3());
       out.x += d.z * rand(-e.w / 4, e.w / 4);
       out.z += -d.x * rand(-e.w / 4, e.w / 4);
+      out.y = elevationAt(out.x, out.z);
       return out;
     }
     return SPAWN.clone();

@@ -3,7 +3,7 @@ import type RAPIER_API from '@dimforge/rapier3d-compat';
 import { G_GROUND, G_BUILDING, G_CHASSIS, G_PART, G_TRAFFIC, groups } from './tuning';
 import {
   EDGES, EDGE_LEN, NODE_EDGES, MAP_EDGE,
-  edgePoint, edgeDir, hasSignal, nsGreen, ewGreen,
+  edgePoint, edgeDir, hasSignal, nsGreen, ewGreen, elevationAt,
 } from './city';
 import { addEdgeLines } from './carModel';
 import type { PlayerVehicle } from './vehicle';
@@ -147,9 +147,10 @@ export class Traffic {
     edgePoint(car.edge, car.s, _p);
     edgeDir(car.edge, car.s, _d);
     if (car.rev) _d.multiplyScalar(-1);
-    // offset to the right of travel direction
+    // offset to the right of travel direction, then re-seat on the terrain
     _p.x += _d.z * car.laneOff;
     _p.z += -_d.x * car.laneOff;
+    _p.y = elevationAt(_p.x, _p.z);
     _p.y = 0.62;
     const targetYaw = Math.atan2(_d.x, _d.z);
     // smooth heading so polyline corners don't snap

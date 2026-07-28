@@ -19,7 +19,8 @@ export const TUNING = {
   steerMax: 0.6,         // rad at standstill
   steerSpeedDrop: 0.02,  // steering tightens with speed
   downforce: 3.2,        // N per (m/s)^2
-  slopeForce: 2.2,       // pseudo-gravity impulse down terrain slopes (tunable)
+  slopeForce: 0,         // legacy flat-world hill fake; the terrain is real now,
+                         // so gravity does this. >0 double-counts (kept for tuning)
   comHeight: -0.28,      // ballast height relative to chassis center (lower = more stable)
   maxSpeed: 57,          // m/s (~127 mph)
   awd: 0,                // 0 = RWD, 1 = AWD

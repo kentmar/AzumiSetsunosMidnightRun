@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { TUNING } from './tuning';
 import {
-  BORDER, SPAWN as CITY_SPAWN, SPAWN_YAW, nearestEdgePoint, type City,
+  BORDER, SPAWN as CITY_SPAWN, SPAWN_YAW, nearestEdgePoint, elevationAt, type City,
 } from './city';
 import type { PlayerVehicle } from './vehicle';
 import type { CrashSystem } from './crash';
@@ -76,7 +76,7 @@ export class Game {
     for (let i = 0; i < 8; i++) {
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.75, 0.4), gasMat);
       const pos = this.city.randomLanePoint();
-      mesh.position.set(pos.x, 0.9, pos.z);
+      mesh.position.set(pos.x, pos.y + 0.9, pos.z);
       this.scene.add(mesh);
       this.gasCans.push({ mesh, pos });
     }
@@ -184,8 +184,9 @@ export class Game {
   private pointRingAtCurrent() {
     const t = this.cpTargets[this.cpIndex];
     if (!t) return;
-    this.ring.position.set(t.x, 5.0, t.z);
-    this.beacon.position.set(t.x, 130, t.z);
+    const g = elevationAt(t.x, t.z);
+    this.ring.position.set(t.x, g + 5.0, t.z);
+    this.beacon.position.set(t.x, g + 130, t.z);
     this.ring.visible = true;
     this.beacon.visible = true;
   }
@@ -224,15 +225,16 @@ export class Game {
       );
       this.vehicle.body.setLinvel({ x: vel.x, y: Math.abs(vel.y) * 0.2, z: vel.z }, true);
       this.fuel = Math.max(0, this.fuel - 8);
+      this.crash.resync(0.5); // the rebound is scripted, not a collision
       this.hud.popup('MIRROR PERIMETER — FUEL −8');
       this.hud.flash(0.6);
     }
 
     // river edges: smash the seawall fence, then you're sinking — camera stays
     // above the surface; a few seconds under and the run is over
-    // only at street level — the tunnels run out under the river, and being
-    // below the riverbed is not the same as being in it
-    const inWater = _v.y > -2 &&
+    // past a shoreline and not inside a bore (the tunnels run out under the
+    // river, so a depth test would either miss drownings or drown drivers)
+    const inWater = !this.city.inTunnel(_v) &&
       (_v.x < this.city.shoreWest(_v.z) || _v.x > this.city.shoreEast(_v.z));
     this.vehicle.underwater = inWater;
     if (inWater && !this.crash.totaled) {
@@ -265,9 +267,12 @@ export class Game {
           const ez = Math.cos(other.exitYaw);
           // the light wall delivers you to the OTHER tunnel's street mouth
           const dest = other.mouth ?? other.pos;
-          this.vehicle.reset(_v2.set(dest.x + ex * 12, 0, dest.z + ez * 12), other.exitYaw);
+          const dx2 = dest.x + ex * 12, dz2 = dest.z + ez * 12;
+          // land on the terrain at the far mouth, not at y=0 inside a hill
+          this.vehicle.reset(_v2.set(dx2, elevationAt(dx2, dz2), dz2), other.exitYaw);
           this.vehicle.body.setLinvel({ x: ex * speed, y: 0, z: ez * speed }, true);
           this.portalCd = 4;
+          this.crash.resync(0.6); // the heading flip is not an impact
           this.hud.popup(`${p.name} → ${other.name}`);
           this.hud.flash(0.8);
           this.onRespawn?.();
@@ -306,7 +311,7 @@ export class Game {
         this.hud.popup('FUEL +45');
         const np = this.city.randomLanePoint();
         can.pos.copy(np);
-        can.mesh.position.set(np.x, 0.9, np.z);
+        can.mesh.position.set(np.x, np.y + 0.9, np.z);
       }
     }
   }
@@ -318,7 +323,7 @@ export class Game {
     const bob = Math.sin(performance.now() * 0.004) * 0.15;
     for (const can of this.gasCans) {
       can.mesh.rotation.y += dt * 2;
-      can.mesh.position.y = 0.9 + bob;
+      can.mesh.position.y = can.pos.y + 0.9 + bob;
     }
 
     if (this.state === 'running') {
