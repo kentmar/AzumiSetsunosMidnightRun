@@ -42,6 +42,10 @@ for (let i = 0; i < EDGES.length; i++) {
   NODE_EDGES[e.b].push(i);
 }
 
+/** vertical exaggeration on the real DEM: rounds-out clipping is handled by
+ *  smoothing (see HSMOOTH), this puts the drama back into the slopes */
+export const TERRAIN_GAIN = 1.45;
+
 const EXT = DATA.extent;
 export const MAP_EDGE =
   Math.max(Math.abs(EXT.minX), EXT.maxX, Math.abs(EXT.minZ), EXT.maxZ) + 60;
@@ -63,7 +67,7 @@ export const BORDER = {
 
 /** river surface height: above the (flat) driving plane, so crossing the
  *  seawall visually puts the car UNDER the water */
-export const WATER_Y = 2.6;
+export const WATER_Y = 2.6 * TERRAIN_GAIN;
 
 // Lincoln Tunnel: a two-way bore that ramps below the street into a sub-layer
 // heading toward NJ (−x). Only the short ramp where the floor is still above
@@ -122,8 +126,42 @@ export const META: { baked: string; source: string } = DATA.meta;
 
 /** real elevation grid (game-space, meters) + bilinear sampler */
 export const HGRID: { n: number; half: number; data: number[] } = DATA.hgrid;
-export function elevationAt(x: number, z: number): number {
-  const { n, half, data } = HGRID;
+
+// The raw DEM is a 54.6 m grid — coarse enough that a road sampled exactly can
+// sink under a terrain mesh sampled at 32 m, which reads as the road clipping
+// through the ground. Blurring the grid once removes those facets (and the
+// clipping); TERRAIN_GAIN then puts the drama back so midtown still rolls.
+const SMOOTH_PASSES = 2;
+export const HSMOOTH: Float32Array = (() => {
+  const n = HGRID.n;
+  let a = Float32Array.from(HGRID.data);
+  let b = new Float32Array(a.length);
+  for (let p = 0; p < SMOOTH_PASSES; p++) {
+    for (let z = 0; z < n; z++) {
+      for (let x = 0; x < n; x++) {
+        let sum = 0, wsum = 0;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx, zz = z + dz;
+            if (xx < 0 || zz < 0 || xx >= n || zz >= n) continue;
+            const w = dx === 0 && dz === 0 ? 4 : dx === 0 || dz === 0 ? 2 : 1;
+            sum += a[zz * n + xx] * w;
+            wsum += w;
+          }
+        }
+        b[z * n + x] = sum / wsum;
+      }
+    }
+    const t = a; a = b; b = t;
+  }
+  return a;
+})();
+export const TERRAIN_CELL = 16; // terrain lattice spacing (see buildTerrain)
+
+/** smoothed DEM sample (bilinear on the 54.6 m grid, times the gain) */
+function sampleDEM(x: number, z: number): number {
+  const { n, half } = HGRID;
+  const data = HSMOOTH;
   const fx = THREE.MathUtils.clamp(((x + half) / (2 * half)) * (n - 1), 0, n - 1.001);
   const fz = THREE.MathUtils.clamp(((z + half) / (2 * half)) * (n - 1), 0, n - 1.001);
   const x0 = Math.floor(fx), z0 = Math.floor(fz);
@@ -132,6 +170,29 @@ export function elevationAt(x: number, z: number): number {
   const h10 = data[z0 * n + Math.min(n - 1, x0 + 1)];
   const h01 = data[Math.min(n - 1, z0 + 1) * n + x0];
   const h11 = data[Math.min(n - 1, z0 + 1) * n + Math.min(n - 1, x0 + 1)];
+  return (
+    (h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz) + h01 * (1 - tx) * tz + h11 * tx * tz) *
+    TERRAIN_GAIN
+  );
+}
+
+/**
+ * THE canonical ground height. Sampling the DEM directly gave a smooth surface
+ * that the (necessarily piecewise-linear) terrain mesh could only approximate,
+ * so roads drawn at the exact height sank up to 0.3 m into the rendered ground.
+ * Interpolating over the mesh's own lattice instead means every consumer —
+ * roads, props, colliders, traffic — sits on exactly the surface you see.
+ */
+export function elevationAt(x: number, z: number): number {
+  const C = TERRAIN_CELL;
+  const i = Math.floor(x / C) * C;
+  const j = Math.floor(z / C) * C;
+  const tx = (x - i) / C;
+  const tz = (z - j) / C;
+  const h00 = sampleDEM(i, j);
+  const h10 = sampleDEM(i + C, j);
+  const h01 = sampleDEM(i, j + C);
+  const h11 = sampleDEM(i + C, j + C);
   return h00 * (1 - tx) * (1 - tz) + h10 * tx * (1 - tz) + h01 * (1 - tx) * tz + h11 * tx * tz;
 }
 
@@ -475,13 +536,13 @@ export class City {
     // ---- ground: REAL topographic contours (USGS elevation baked into HGRID) ----
     const n = HGRID.n;
     let hMin = Infinity, hMax = -Infinity;
-    for (const h of HGRID.data) {
+    for (const h of HSMOOTH) {
       if (h < hMin) hMin = h;
       if (h > hMax) hMax = h;
     }
     const hTexData = new Uint8Array(n * n);
     for (let i = 0; i < n * n; i++) {
-      hTexData[i] = Math.round(((HGRID.data[i] - hMin) / Math.max(1, hMax - hMin)) * 255);
+      hTexData[i] = Math.round(((HSMOOTH[i] - hMin) / Math.max(1, hMax - hMin)) * 255);
     }
     const hTex = new THREE.DataTexture(hTexData, n, n, THREE.RedFormat, THREE.UnsignedByteType);
     hTex.minFilter = THREE.LinearFilter;
@@ -495,11 +556,12 @@ export class City {
       uFogColor: { value: new THREE.Color(FOG.color) },
       uFogDensity: { value: FOG.density },
       uHeight: { value: hTex },
-      uHMin: { value: hMin },
-      uHRange: { value: Math.max(1, hMax - hMin) },
+      uHMin: { value: hMin * TERRAIN_GAIN },
+      uHRange: { value: Math.max(1, hMax - hMin) * TERRAIN_GAIN },
       uHHalf: { value: HGRID.half },
     };
     const groundMat = new THREE.ShaderMaterial({
+      side: THREE.DoubleSide, // solid from underneath too: no red void
       uniforms: this.groundUniforms,
       vertexShader: /* glsl */ `
         varying vec3 vWorldPos;
@@ -758,9 +820,11 @@ export class City {
       const t = Math.min(1, out / 30);
       return elevationAt(x, z) * (1 - t) + RIVERBED * t;
     };
-    const G = (MAP_EDGE * 2 + 900) / 2;
-    const CELL = 32;
-    const SUB = 16; // 2 m around the portals
+    const CELL = TERRAIN_CELL;
+    // snap the grid origin to the lattice so mesh vertices land exactly on the
+    // nodes elevationAt interpolates between
+    const G = Math.ceil((MAP_EDGE * 2 + 900) / 2 / CELL) * CELL;
+    const SUB = 8; // 2 m around the portals
     const n = Math.ceil((2 * G) / CELL);
     const pos: number[] = [];
     const idx: number[] = [];
@@ -806,7 +870,7 @@ export class City {
     geo.setIndex(idx);
     geo.computeVertexNormals();
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.y = -0.05; // sit just under the physics surface so roads read
+    mesh.position.y = -0.03; // a hair under, so road ribbons always win
     mesh.frustumCulled = false;
     scene.add(mesh);
 
@@ -967,7 +1031,7 @@ export class City {
     const boxes: { x: number; z: number; w: number; d: number; h: number; row: number; side: number }[] = [];
     for (const side of [-1, 1]) {
       const at = side < 0 ? BORDER.minZ : BORDER.maxZ;
-      for (let row = 0; row < 4; row++) {
+      for (let row = 0; row < 7; row++) {
         const zc = at + side * (75 + row * 115);
         let x = BORDER.minX + 50;
         while (x < BORDER.maxX - 50) {
@@ -988,13 +1052,15 @@ export class City {
       const b = boxes[i];
       const g = elevationAt(b.x, b.z);
       const top = g + b.h;
-      m4.makeScale(b.w, b.h, b.d).setPosition(b.x, g + b.h / 2, b.z);
+      // extend far below grade: from a rise you could see their cut-off bases
+      const SKIRT = 140;
+      m4.makeScale(b.w, b.h + SKIRT, b.d).setPosition(b.x, top - (b.h + SKIRT) / 2, b.z);
       fill.setMatrixAt(i, m4);
       // vertical + roof edge lines only (silhouette wireframe, half the verts)
       const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2;
       const z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
       for (const [ex, ez] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]] as [number, number][]) {
-        lpos.push(ex, g - 2, ez, ex, top, ez);
+        lpos.push(ex, g - 3, ez, ex, top, ez);
       }
       lpos.push(x0, top, z0, x1, top, z0, x1, top, z0, x1, top, z1);
       lpos.push(x1, top, z1, x0, top, z1, x0, top, z1, x0, top, z0);
@@ -1053,8 +1119,8 @@ export class City {
       }
       return arr;
     };
-    const mW = march(-1, 2.45);
-    const mE = march(1, 1.2);
+    const mW = march(-1, 2.45 * TERRAIN_GAIN);
+    const mE = march(1, 1.2 * TERRAIN_GAIN);
     // …anchored by the outermost real road per z-band (the shoreline highways):
     // the fence always sits just past the last drivable ribbon, never on it
     const bins = mW.length;
@@ -1147,6 +1213,7 @@ export class City {
     const zL = mouthZ - W / 2, zR = mouthZ + W / 2;
     const cx = (s: number) => mouthX + dir * s;
     const COVER = 28; // roof only starts once the ceiling clears street level
+    const groundTop = (x: number) => elevationAt(x, mouthZ); // lip of the open cut
     this.bores.push({ mouthX, mouthZ, mouthY, rampEnd: RAMP1, dir, len: LEN });
 
     const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
@@ -1168,16 +1235,16 @@ export class City {
 
     for (let i = 0; i < samples.length; i++) {
       const s = samples[i], x = cx(s), fy = tunFloorY(s, mouthY, RAMP1), cy = fy + CEIL;
-      const top = Math.min(cy, 0); // open cut near the mouth
+      const top = Math.min(cy, groundTop(x)); // open cut near the mouth
       ribPos.push(x, fy, zL, x, top, zL, x, fy, zR, x, top, zR);
       if (cy <= 0) ribPos.push(x, cy, zL, x, cy, zR);
       if (i === 0) continue;
       const ps = samples[i - 1], pX = cx(ps), pfy = tunFloorY(ps, mouthY, RAMP1);
-      const pcy = pfy + CEIL, pTop = Math.min(pcy, 0);
+      const pcy = pfy + CEIL, pTop = Math.min(pcy, groundTop(pX));
       quad(floorPos, floorIdx, [pX, pfy, zL], [x, fy, zL], [x, fy, zR], [pX, pfy, zR]);
       quad(shellPos, shellIdx, [pX, pfy, zL], [x, fy, zL], [x, top, zL], [pX, pTop, zL]);
       quad(shellPos, shellIdx, [pX, pfy, zR], [x, fy, zR], [x, top, zR], [pX, pTop, zR]);
-      if (cy <= 0 && pcy <= 0) {
+      if (cy <= groundTop(x) && pcy <= groundTop(pX)) {
         quad(shellPos, shellIdx, [pX, pcy, zL], [x, cy, zL], [x, cy, zR], [pX, pcy, zR]);
         quad(litPos, litIdx, [pX, pcy - 0.06, mouthZ - 1.6], [x, cy - 0.06, mouthZ - 1.6],
           [x, cy - 0.06, mouthZ + 1.6], [pX, pcy - 0.06, mouthZ + 1.6]);
@@ -1345,7 +1412,7 @@ export class City {
     const pos: number[] = [];
     const idx: number[] = [];
     const lpos: number[] = []; // road edge lines
-    const Y = 0.016;
+    const Y = 0.045; // just proud of the ground it now matches exactly
 
     for (let ei = 0; ei < EDGES.length; ei++) {
       const e = EDGES[ei];
@@ -1598,6 +1665,14 @@ export class City {
         seed.push(b.s);
       }
       for (const t of tris) idx.push(roofBase + t[0], roofBase + t[2], roofBase + t[1]);
+      // floor cap (reverse winding): closes the shell so nothing sees inside
+      const floorBase = pos.length / 3;
+      for (const [x, z] of pts) {
+        pos.push(x, baseY, z);
+        nor.push(0, -1, 0);
+        seed.push(b.s);
+      }
+      for (const t of tris) idx.push(floorBase + t[0], floorBase + t[1], floorBase + t[2]);
 
       // exact trimesh for buildings with concave footprints (courtyard/L-shape);
       // convex hull for the rest (convex hulls are cheaper but bulge into streets

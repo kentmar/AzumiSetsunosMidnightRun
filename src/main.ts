@@ -376,7 +376,7 @@ async function boot() {
 
   // debug/inspection handle (dev only)
   (window as unknown as Record<string, unknown>).NR = {
-    game, vehicle, crash, chase, world, scene, traffic, minimap, city, elevationAt, audio,
+    game, vehicle, crash, chase, world, scene, traffic, minimap, city, elevationAt, audio, RAPIER,
   };
 }
 

@@ -62,7 +62,10 @@ export class PlayerVehicle {
       .setTranslation(SPAWN.x, 1.2, SPAWN.z)
       .setCanSleep(false)
       .setAngularDamping(0.6)
-      .setLinearDamping(0.04);
+      .setLinearDamping(0.04)
+      // the terrain is a zero-thickness trimesh: without CCD a hard landing
+      // punches straight through it and you end up under the map
+      .setCcdEnabled(true);
     this.body = world.createRigidBody(bodyDesc);
 
     const hullDesc = RAPIER.ColliderDesc.cuboid(0.92, 0.28, 2.15).setFriction(0.35).setRestitution(0.15);

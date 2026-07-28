@@ -33,6 +33,7 @@ const MAX_RPM = 7200;
 // shift points are what make an engine read as an engine.
 const GEAR_TOP = [12, 22, 33, 45, 62]; // m/s at redline in each gear
 const FIRING_ORDER = 3; // inline-6, four-stroke: 3 power strokes per revolution
+const SHIFT_TIME = 0.18; // length of the shift cut
 
 export class AudioSystem {
   private ctx: AudioContext | null = null;
@@ -98,15 +99,27 @@ export class AudioSystem {
     this.engFilter = ctx.createBiquadFilter();
     this.engFilter.type = 'lowpass';
     this.engFilter.frequency.value = 600;
-    this.engFilter.Q.value = 0.9;
+    this.engFilter.Q.value = 0.7;
     this.engGain = ctx.createGain();
     this.engGain.gain.value = 0;
     this.engFilter.connect(this.engGain);
     this.fan(this.engGain);
 
-    const mkOsc = (type: OscillatorType, gain: number) => {
+    // A sawtooth carries every harmonic at 1/n, which is precisely what "buzzy"
+    // sounds like. A real engine's spectrum rolls off far faster and leans on
+    // the low orders, so build custom waves instead of using the stock shapes.
+    const engineWave = (rolloff: number, n = 20) => {
+      const real = new Float32Array(n + 1);
+      const imag = new Float32Array(n + 1);
+      for (let h = 1; h <= n; h++) {
+        // even orders sit back a little: gives the lumpy six-cylinder beat
+        imag[h] = Math.pow(h, -rolloff) * (h % 2 === 0 ? 0.7 : 1);
+      }
+      return ctx.createPeriodicWave(real, imag);
+    };
+    const mkOsc = (wave: PeriodicWave | null, type: OscillatorType, gain: number) => {
       const o = ctx.createOscillator();
-      o.type = type;
+      if (wave) o.setPeriodicWave(wave); else o.type = type;
       const g = ctx.createGain();
       g.gain.value = gain;
       o.connect(g);
@@ -114,10 +127,10 @@ export class AudioSystem {
       o.start();
       return o;
     };
-    this.oscA = mkOsc('sawtooth', 0.5);
-    this.oscB = mkOsc('sawtooth', 0.34);
-    this.oscSub = mkOsc('square', 0.26);
-    this.oscB.detune.value = 9; // slight beat: stops it sounding like one tone
+    this.oscA = mkOsc(engineWave(1.7), 'sawtooth', 0.55);
+    this.oscB = mkOsc(engineWave(2.3), 'sawtooth', 0.26);
+    this.oscSub = mkOsc(null, 'triangle', 0.30); // triangle, not square: body without edge
+    this.oscB.detune.value = 7; // slight beat: stops it sounding like one tone
 
     // induction/intake roar
     const indSrc = ctx.createBufferSource();
@@ -205,7 +218,7 @@ export class AudioSystem {
     let g = 0;
     while (g < GEAR_TOP.length - 1 && sp > GEAR_TOP[g]) g++;
     if (g !== this.gear) {
-      this.shiftT = 0.13; // brief cut, so the shift is audible
+      this.shiftT = SHIFT_TIME;
       this.gear = g;
     }
     this.shiftT = Math.max(0, this.shiftT - dt);
@@ -225,19 +238,20 @@ export class AudioSystem {
 
     const load = s.throttle;
     const alive = s.running && !s.dead ? 1 : 0;
-    const shiftDuck = this.shiftT > 0 ? 0.32 : 1;
-    const engTarget = alive * shiftDuck * (0.10 + 0.155 * load + 0.09 * rpm01);
+    // smooth bell-shaped cut: deepest mid-shift, recovers cleanly
+    const shiftDuck = 1 - 0.55 * Math.sin((this.shiftT / SHIFT_TIME) * Math.PI);
+    const engTarget = alive * shiftDuck * (0.10 + 0.155 * load + 0.09 * rpm01) * TUNING.audioEngine;
     this.engGain.gain.value += (engTarget - this.engGain.gain.value) * k;
-    const cutoff = 320 + load * 2400 + rpm01 * 2600;
+    const cutoff = 300 + load * 1250 + rpm01 * 1350;
     this.engFilter.frequency.setTargetAtTime(cutoff, t, 0.05);
-    const indTarget = alive * (0.02 + 0.085 * load * (0.3 + rpm01));
+    const indTarget = alive * (0.02 + 0.085 * load * (0.3 + rpm01)) * TUNING.audioEngine;
     this.induction.gain.value += (indTarget - this.induction.gain.value) * k;
 
     // ---- turbo: spools on sustained throttle, chirps on lift ----
     const spoolRate = load > 0.5 && rpm01 > 0.25 ? dt * 1.1 : -dt * 2.2;
     this.boost = Math.max(0, Math.min(1, this.boost + spoolRate));
-    this.whistle.frequency.setTargetAtTime(1800 + this.boost * 3400 + rpm01 * 900, t, 0.05);
-    const wTarget = alive * this.boost * 0.024;
+    this.whistle.frequency.setTargetAtTime(1150 + this.boost * 1700 + rpm01 * 600, t, 0.05);
+    const wTarget = alive * this.boost * 0.009 * TUNING.audioTurbo;
     this.whistleGain.gain.value += (wTarget - this.whistleGain.gain.value) * k;
     if (this.prevThrottle > 0.55 && load < 0.15 && this.boost > 0.45) this.blowOff();
     this.prevThrottle = load;
@@ -296,11 +310,11 @@ export class AudioSystem {
     src.buffer = this.noiseBuf;
     const hp = ctx.createBiquadFilter();
     hp.type = 'bandpass';
-    hp.frequency.setValueAtTime(3400, t);
-    hp.frequency.exponentialRampToValueAtTime(1500, t + 0.18);
+    hp.frequency.setValueAtTime(2600, t);
+    hp.frequency.exponentialRampToValueAtTime(1200, t + 0.18);
     hp.Q.value = 1.6;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(0.10, t);
+    g.gain.setValueAtTime(0.06 * TUNING.audioTurbo, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
     src.connect(hp); hp.connect(g); this.fan(g);
     src.start(t);
