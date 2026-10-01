@@ -34,15 +34,17 @@ npm run dev        # → http://localhost:5173
 | HUD | [src/hud.ts](src/hud.ts) | Tactical amber/cyan: big MPH, fuel, integrity, credits, checkpoints, boundary warning, attract-screen daily panel (status, streak, tonight's sky), Daily Route clock + results screen. |
 | Bootstrap | [src/main.ts](src/main.ts) | 60 Hz fixed-step accumulator (slow-mo scales sim time), render interpolation, one-shot cubemap for wet-road/paint reflections. `window.NR` = debug handle. |
 
-## Deploy (Railway)
+## Deploy (Cloudflare Pages)
 
-Railway builds with `npm run build` and serves `dist/` as a static site. Production
-builds are hardened in [vite.config.ts](vite.config.ts): game code is obfuscated
-(libraries are left minified), no source maps, and [src/guard.ts](src/guard.ts) locks the
-game to its own domain — a copy re-hosted elsewhere shows a "not authorized" notice.
-Allowed hosts are baked in at build time from `RAILWAY_PUBLIC_DOMAIN` plus the optional
-`ALLOWED_HOSTS` variable (comma list, e.g. `nightrun.example.com`). Add a custom domain
-there and redeploy. `npm run dev` is never locked. This is a deterrent, not DRM.
+Live at **https://drive.azumisetsuno.com** — a Cloudflare Pages project separate from the
+azumisetsuno.com website. Build command `npm run build`, output directory `dist`.
+Production builds are hardened in [vite.config.ts](vite.config.ts): game code is
+obfuscated (libraries are left minified), no source maps, and [src/guard.ts](src/guard.ts)
+locks the game to its own domain — a copy re-hosted elsewhere shows a "not authorized"
+notice linking back to drive.azumisetsuno.com. `azumisetsuno.com` and its subdomains are
+always allowed (so the main site can embed it); add the Pages project's own
+`<project>.pages.dev` (covers branch previews) or any other host via the `ALLOWED_HOSTS`
+env var (comma list). `npm run dev` is never locked. This is a deterrent, not DRM.
 
 ## Feel-tuning workflow
 

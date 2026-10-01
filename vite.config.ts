@@ -6,10 +6,14 @@ import JavaScriptObfuscator from 'javascript-obfuscator';
 // - our game code chunk is run through javascript-obfuscator, light settings only
 //   (no control-flow flattening / dead code) so the 60 Hz loop doesn't pay for it
 // - no source maps
-// - hosts the domain lock (src/guard.ts) accepts: ALLOWED_HOSTS (comma list)
-//   plus RAILWAY_PUBLIC_DOMAIN, both read at build time
+// - hosts the domain lock (src/guard.ts) accepts: the official site (always,
+//   first entry = where the "unauthorized copy" notice links), plus ALLOWED_HOSTS
+//   (comma list) and RAILWAY_PUBLIC_DOMAIN, read at build time. A listed host
+//   also covers its subdomains, so azumisetsuno.com lets the main site embed it.
 
-const allowedHosts = [process.env.ALLOWED_HOSTS ?? '', process.env.RAILWAY_PUBLIC_DOMAIN ?? '']
+const OFFICIAL_HOSTS = 'drive.azumisetsuno.com,azumisetsuno.com';
+
+const allowedHosts = [OFFICIAL_HOSTS, process.env.ALLOWED_HOSTS ?? '', process.env.RAILWAY_PUBLIC_DOMAIN ?? '']
   .flatMap((s) => s.split(','))
   .map((s) => s.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
   .filter((s, i, a) => s && a.indexOf(s) === i);

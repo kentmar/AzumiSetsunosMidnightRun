@@ -1,5 +1,5 @@
 // Domain lock: a production build only runs on the hosts baked in at build
-// time (ALLOWED_HOSTS + Railway's public domain, see vite.config.ts), so a
+// time (drive.azumisetsuno.com + ALLOWED_HOSTS, see vite.config.ts), so a
 // straight re-upload of dist/ to another site shows a notice instead of the
 // game. Also refuses to run framed by a foreign page. Dev builds are unlocked.
 // Deterrent only — anyone determined can patch it out of the bundle.
@@ -29,7 +29,7 @@ function framedByForeignPage(): boolean {
 
 /** true if the game may boot here; otherwise paints a notice and returns false */
 export function domainAllowed(): boolean {
-  if (import.meta.env.DEV || !__ALLOWED_HOSTS__.length) return true;
+  if (import.meta.env.DEV) return true;
   if (hostOk(location.hostname) && !framedByForeignPage()) return true;
 
   const home = __ALLOWED_HOSTS__[0];
