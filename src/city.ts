@@ -2018,6 +2018,14 @@ export class City {
     return SPAWN.clone();
   }
 
+  /** daily weather: the custom shaders carry their own copy of the scene fog */
+  setFog(color: number, density: number) {
+    for (const u of [this.buildingUniforms, this.groundUniforms, this.waterUniforms]) {
+      u.uFogColor.value.setHex(color);
+      u.uFogDensity.value = density;
+    }
+  }
+
   update(time: number, lightning01: number, playerPos?: THREE.Vector3) {
     this.buildingUniforms.uLightning.value = lightning01;
     this.buildingUniforms.uTime.value = time;
