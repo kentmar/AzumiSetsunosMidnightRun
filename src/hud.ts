@@ -1,7 +1,17 @@
 // Tactical high-contrast DOM HUD: big MPH, fuel, integrity, credits, checkpoints,
-// boundary warning, plus the attract / game-over arcade overlays.
+// boundary warning, plus the attract / game-over / daily-results overlays.
 
 import { MAX_RPM, REDLINE_RPM } from './vehicle';
+import {
+  DAILY_BONUS, STREAK_MILESTONES, formatTime, type DailyResult, type LeaderboardEntry,
+} from './daily';
+
+/** everything the Daily Route results screen shows */
+export interface ResultsView extends DailyResult {
+  date: string;
+  top: LeaderboardEntry[];
+  bestSprint: number | null;
+}
 
 const AMBER = '#ffb84d';
 const CYAN = '#58e6ff';
@@ -33,6 +43,7 @@ const GLYPH: Record<string, number[][][]> = {
   '9': [[[5, 5], [0, 5], [0, 0], [5, 0], [5, 10], [0, 10]]],
   '.': [[[2.3, 9.6], [2.7, 9.6]]],
   '-': [[[1, 5], [4, 5]]],
+  ':': [[[2.3, 2.6], [2.7, 2.6]], [[2.3, 7.4], [2.7, 7.4]]],
 };
 
 function numerals(text: string | number, size: number, color: string, weight = 1.1, gap = 2.2): string {
@@ -40,7 +51,7 @@ function numerals(text: string | number, size: number, color: string, weight = 1
   let x = 0, paths = '';
   for (const ch of String(text)) {
     const g = GLYPH[ch];
-    const w = ch === '.' ? 2.4 : ch === '1' ? 4.2 : 5;
+    const w = ch === '.' || ch === ':' ? 2.4 : ch === '1' ? 4.2 : 5;
     if (g) {
       for (const line of g) {
         const d = line
@@ -166,6 +177,9 @@ export class Hud {
     brackets(this.checkpoints, 'rgba(88,230,255,0.45)', 5);
     this.tripLine = el(tr, `font-size:10px;letter-spacing:2px;opacity:0.6;color:#fff;`,
       'TRIP 0.0 MI &middot; 0:00');
+    // Daily Route clock (stays visible on touch, unlike the trip line)
+    this.dailyTimer = el(tr, `font-size:15px;letter-spacing:3px;color:${AMBER};padding:4px 12px;display:none;`);
+    brackets(this.dailyTimer, 'rgba(255,184,77,0.45)', 5);
 
     // boundary warning, top-center
     this.warning = el(this.root, `position:absolute;left:50%;transform:translateX(-50%);top:56px;
@@ -203,6 +217,19 @@ export class Hud {
     coin.animate([{ opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }], { duration: 1300, iterations: Infinity });
     this.coinEl = coin;
     this.attractCreditLine = el(this.attractEl, `font-size:16px;letter-spacing:4px;margin-top:14px;color:${CYAN};`, '');
+
+    // daily panel: today's route status, streak, tonight's weather. Tappable
+    // (data-nrbtn keeps the touch "tap anywhere" coin/start from firing too)
+    this.dailyEl = el(this.attractEl, `margin-top:26px;padding:10px 22px;text-align:center;
+      pointer-events:auto;cursor:pointer;background:rgba(6,4,10,0.45);line-height:1.9;
+      max-width:calc(100vw - 32px);box-sizing:border-box;`);
+    this.dailyEl.dataset.nrbtn = '1';
+    this.dailyEl.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.onDailyTap?.();
+    });
+    this.dailyBody = el(this.dailyEl, `pointer-events:none;`);
+    brackets(this.dailyEl, 'rgba(88,230,255,0.55)', 7);
     this.hintEl = el(this.attractEl, `font-size:12px;letter-spacing:3px;margin-top:44px;opacity:0.75;line-height:2;text-align:center;`,
       'W/&#8593; THROTTLE &nbsp; S/&#8595; BRAKE &nbsp; A D STEER &nbsp; SPACE HANDBRAKE<br/>R FLIP RESCUE &nbsp; P TUNING PANEL &nbsp; RUN THE BLUE RINGS &nbsp; TUNNELS WARP CROSSTOWN');
     this.dataStampEl = el(this.attractEl, `font-size:10px;letter-spacing:2px;margin-top:26px;opacity:0.5;text-align:center;line-height:1.8;`);
@@ -214,6 +241,105 @@ export class Hud {
       text-shadow:0 0 30px rgba(255,40,60,0.9);`, 'WRECKED');
     el(this.gameOverEl, `font-size:26px;letter-spacing:8px;margin-top:20px;`, 'GAME OVER');
     this.goPrompt = el(this.gameOverEl, `font-size:20px;letter-spacing:4px;margin-top:40px;color:${CYAN};text-align:center;line-height:2;`);
+
+    // ---- daily results ----
+    this.resultsEl = el(this.root, `position:absolute;inset:0;display:none;flex-direction:column;
+      align-items:center;justify-content:center;background:rgba(2,4,10,0.72);text-align:center;`);
+    this.resultsBody = el(this.resultsEl, ``);
+    this.resultsPrompt = el(this.resultsEl, `font-size:16px;letter-spacing:4px;margin-top:26px;color:${CYAN};`);
+  }
+
+  private dailyTimer!: HTMLDivElement;
+  private dailyEl!: HTMLDivElement;
+  private dailyBody!: HTMLDivElement;
+  private resultsEl!: HTMLDivElement;
+  private resultsBody!: HTMLDivElement;
+  private resultsPrompt!: HTMLDivElement;
+  private skyLabel = '';
+  private dailyArgs: [string, number, number | null] = ['', 0, null];
+  /** set by main: the daily panel was clicked/tapped */
+  onDailyTap?: () => void;
+
+  /** tonight's weather name for the daily panel */
+  setSkyLabel(label: string) {
+    this.skyLabel = label;
+    this.setDaily(...this.dailyArgs);
+  }
+
+  /** attract-screen daily panel */
+  setDaily(date: string, streak: number, best: number | null) {
+    this.dailyArgs = [date, streak, best];
+    const next = STREAK_MILESTONES.find((m) => m > streak);
+    const status = best === null
+      ? `<span style="color:${RED}">NOT RUN</span> &middot; FIRST CLEAR +${DAILY_BONUS} CREDITS`
+      : `<span style="color:${CYAN}">CLEARED</span> &middot; BEST ${formatTime(best)}`;
+    const go = this.touchMode ? 'TAP HERE TO RUN IT' : 'PRESS D TO RUN IT';
+    this.dailyBody.innerHTML = `
+      <div style="font-size:11px;letter-spacing:5px;color:${CYAN};">DAILY ROUTE &middot; ${date}${
+        this.skyLabel ? ` &middot; ${this.skyLabel}` : ''}</div>
+      <div style="font-size:15px;letter-spacing:3px;">TODAY: ${status}</div>
+      <div style="font-size:13px;letter-spacing:3px;color:#fff;">STREAK ${streak} DAY${streak === 1 ? '' : 'S'}${
+        next ? `<span style="opacity:0.6;"> &middot; BONUS AT ${next}</span>` : ''}</div>
+      <div style="font-size:12px;letter-spacing:4px;color:${AMBER};opacity:0.85;">${go}</div>`;
+  }
+
+  /** Daily Route clock under the checkpoint counter; null hides it */
+  setDailyTimer(seconds: number | null) {
+    if (seconds === null) {
+      this.dailyTimer.style.display = 'none';
+      return;
+    }
+    this.dailyTimer.style.display = 'block';
+    this.dailyTimer.innerHTML = `<i></i>DAILY ${formatTime(seconds)}`;
+  }
+
+  showResults(r: ResultsView | null) {
+    if (!r) {
+      this.resultsEl.style.display = 'none';
+      return;
+    }
+    this.resultsEl.style.display = 'flex';
+    // the finish popup already played its sting; don't stack it on the results
+    this.popupT = 0;
+    this.popupEl.style.opacity = '0';
+    const tag = (on: boolean, text: string) =>
+      on ? `<span style="color:${CYAN};font-size:14px;letter-spacing:4px;margin:0 8px;">${text}</span>` : '';
+    const pays: string[] = [];
+    if (r.bonus) pays.push(`FIRST CLEAR +${r.bonus} CREDITS`);
+    if (r.streakBonus) pays.push(`${r.streak}-DAY STREAK +${r.streakBonus} CREDIT`);
+    if (!pays.length) pays.push('ALREADY CLEARED TODAY — TIME RECORDED');
+    // highlight the run just finished in the personal top 5
+    let marked = false;
+    const rows = r.top.map((e, i) => {
+      const mine = !marked && Math.abs(e.time - r.time) < 1e-6;
+      if (mine) marked = true;
+      return `<div style="display:flex;justify-content:space-between;gap:40px;
+        color:${mine ? AMBER : '#fff'};opacity:${mine ? 1 : 0.75};">
+        <span>${i + 1}. ${e.name}</span><span>${formatTime(e.time)}</span></div>`;
+    }).join('');
+    this.resultsBody.innerHTML = `
+      <div style="font-size:14px;letter-spacing:10px;color:${CYAN};">DAILY ROUTE &middot; ${r.date}</div>
+      <div style="font-size:44px;font-weight:900;letter-spacing:8px;margin-top:8px;
+        text-shadow:0 0 26px rgba(255,150,40,0.8);">COMPLETE</div>
+      <div style="display:flex;justify-content:center;margin-top:16px;">${numerals(formatTime(r.time), 46, '#fff', 1.05, 2.1)}</div>
+      <div style="margin-top:8px;font-size:13px;letter-spacing:3px;">${
+        tag(r.newDayBest, 'TODAY&#39;S BEST')}${tag(r.newAllTime, 'ALL-TIME BEST')}</div>
+      <div style="margin-top:14px;font-size:15px;letter-spacing:3px;color:${AMBER};line-height:1.8;">${pays.join('<br/>')}</div>
+      <div style="margin-top:6px;font-size:13px;letter-spacing:3px;color:#fff;">STREAK ${r.streak} DAY${r.streak === 1 ? '' : 'S'}</div>
+      <div style="position:relative;margin:22px auto 0;padding:12px 20px;width:max-content;min-width:260px;
+        font-size:14px;letter-spacing:3px;line-height:1.9;background:rgba(6,4,10,0.45);" data-lb>
+        <div style="font-size:11px;letter-spacing:5px;color:${CYAN};margin-bottom:4px;">TODAY &middot; TOP 5</div>
+        ${rows || `<div style="opacity:0.5;">&mdash;</div>`}
+        <div style="margin-top:8px;font-size:11px;letter-spacing:3px;color:${CYAN};">ALL-TIME BEST SPRINT &nbsp;
+          <span style="color:#fff;">${r.bestSprint !== null ? formatTime(r.bestSprint) : '&mdash;'}</span></div>
+      </div>`;
+    const lb = this.resultsBody.querySelector('[data-lb]') as HTMLDivElement | null;
+    if (lb) brackets(lb, 'rgba(88,230,255,0.45)', 6);
+  }
+
+  setResultsCountdown(sec: number) {
+    const go = this.touchMode ? 'TAP TO CONTINUE' : 'PRESS ENTER TO CONTINUE';
+    this.resultsPrompt.textContent = `${go} · ${Math.ceil(sec)}`;
   }
 
   private attractCreditLine!: HTMLDivElement;
@@ -245,6 +371,7 @@ export class Hud {
     this.cluster.style.transform = 'scale(0.74)';
     this.cluster.style.transformOrigin = 'bottom right';
     this.tripLine.style.display = 'none';
+    this.setDaily(...this.dailyArgs);
   }
 
   /** bowed segmented column — the signature gauge of the cluster.
@@ -364,8 +491,8 @@ export class Hud {
     this.attractCreditLine.textContent =
       n > 0 ? `${n} CREDIT${n > 1 ? 'S' : ''} — PRESS ENTER TO START` : 'NO CREDITS';
   }
-  setCheckpoints(k: number, n: number) {
-    this.checkpoints.textContent = `CHECKPOINT ${k}/${n}`;
+  setCheckpoints(k: number, n: number, daily = false) {
+    this.checkpoints.textContent = `${daily ? 'DAILY CP' : 'CHECKPOINT'} ${k}/${n}`;
   }
   setWarning(w01: number | null) {
     if (w01 === null || w01 <= 0) {

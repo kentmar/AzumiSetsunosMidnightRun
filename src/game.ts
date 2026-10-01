@@ -7,11 +7,17 @@ import type { PlayerVehicle } from './vehicle';
 import type { CrashSystem } from './crash';
 import type { Hud } from './hud';
 import type { Input } from './input';
+import {
+  DailyStore, buildDailyRoute, localDateKey, type LeaderboardSource,
+} from './daily';
 
 // Arcade shell: attract -> running -> game over -> continue-for-a-credit.
 // Owns credits, fuel, the checkpoint sprint, gas pickups, and the boundary.
+// A run is either the endless arcade sprint or today's seeded Daily Route
+// (D on the attract screen), which ends on a results screen.
 
-export type GameState = 'attract' | 'running' | 'gameover';
+export type GameState = 'attract' | 'running' | 'gameover' | 'results';
+export type RunMode = 'arcade' | 'daily';
 
 const CHECKPOINT_COUNT = 6;
 const SPAWN = CITY_SPAWN;
@@ -46,6 +52,17 @@ export class Game {
   private odoSaveT = 0;
   private lastTrip = 0;
   private runTime = 0;
+
+  /** daily-return persistence: streak, per-day bests, all-time sprint */
+  daily = new DailyStore();
+  /** where Daily Route times are posted + read back (local only for now) */
+  leaderboard: LeaderboardSource = this.daily;
+  mode: RunMode = 'arcade';
+  /** date the current Daily Route belongs to (fixed at GO, survives midnight) */
+  private runDate = localDateKey();
+  /** sim-time on the current checkpoint set; pauses and slow-mo don't count */
+  private sprintTime = 0;
+  private resultsCountdown = 0;
 
   constructor(
     private scene: THREE.Scene,
@@ -92,6 +109,12 @@ export class Game {
     input.onPress('Enter', () => {
       if (this.state === 'attract' && this.credits > 0) this.start();
       else if (this.state === 'gameover' && this.credits > 0) this.continueRun();
+      else if (this.state === 'results') this.backToAttract();
+    });
+    input.onPress('KeyD', () => {
+      if (this.state !== 'attract') return;
+      if (this.credits > 0) this.start('daily');
+      else this.hud.popup('INSERT COIN [ C ]');
     });
     input.onPress('KeyC', () => {
       this.credits++;
@@ -112,11 +135,18 @@ export class Game {
     });
 
     this.hud.setCredits(this.credits);
+    this.refreshDaily();
     this.hud.showAttract(true);
     this.vehicle.reset(SPAWN, SPAWN_YAW);
   }
 
-  private start() {
+  /** attract-screen daily panel: today's status + streak */
+  private refreshDaily() {
+    const today = localDateKey();
+    this.hud.setDaily(today, this.daily.streak(today), this.daily.dayBest(today));
+  }
+
+  private start(mode: RunMode = 'arcade') {
     this.credits--;
     this.fuel = 100;
     this.vehicle.fuelEmpty = false;
@@ -127,12 +157,18 @@ export class Game {
     this.lastTrip = 0;
     this.runTime = 0;
     this.vehicle.reset(SPAWN, SPAWN_YAW);
-    this.rollCheckpoints();
+    this.mode = mode;
+    if (mode === 'daily') {
+      this.runDate = localDateKey();
+      this.cpTargets = buildDailyRoute(this.runDate, this.checkpointPool(), SPAWN);
+      this.startSet();
+    } else this.rollCheckpoints();
     this.state = 'running';
     this.hud.showAttract(false);
     this.hud.showGameOver(null, 0, 0);
+    this.hud.showResults(null);
     this.hud.setCredits(this.credits);
-    this.hud.popup('GO!');
+    this.hud.popup(mode === 'daily' ? 'DAILY ROUTE — GO!' : 'GO!');
     this.onRespawn?.();
   }
 
@@ -176,20 +212,76 @@ export class Game {
     this.goCountdown = 9.9;
   }
 
-  private rollCheckpoints() {
-    this.cpTargets = [];
-    const pool = [...this.city.intersections].filter(
+  /** junctions eligible for checkpoints (shared by arcade + Daily Route) */
+  private checkpointPool(): THREE.Vector3[] {
+    return this.city.intersections.filter(
       (p) =>
         p.x > BORDER.minX + 100 && p.x < BORDER.maxX - 100 &&
         p.z > BORDER.minZ + 100 && p.z < BORDER.maxZ - 100
     );
+  }
+
+  private rollCheckpoints() {
+    this.cpTargets = [];
+    const pool = this.checkpointPool();
     for (let i = 0; i < CHECKPOINT_COUNT && pool.length; i++) {
       const idx = Math.floor(Math.random() * pool.length);
       this.cpTargets.push(pool.splice(idx, 1)[0].clone());
     }
+    this.startSet();
+  }
+
+  private startSet() {
     this.cpIndex = 0;
+    this.sprintTime = 0;
     this.pointRingAtCurrent();
-    this.hud.setCheckpoints(0, this.cpTargets.length);
+    this.hud.setCheckpoints(0, this.cpTargets.length, this.mode === 'daily');
+  }
+
+  /** Daily Route crossed the last ring: bank the time, pay out, show results */
+  private finishDaily() {
+    const date = this.runDate;
+    const res = this.daily.completeDaily(date, this.sprintTime);
+    const pay = res.bonus + res.streakBonus;
+    this.credits += pay;
+    this.hud.setCredits(this.credits);
+    // sting only — the results screen is the visual, a popup would sit on it
+    this.hud.onPopup?.('DAILY ROUTE COMPLETE');
+    this.state = 'results';
+    this.resultsCountdown = 15;
+    this.ring.visible = false;
+    this.beacon.visible = false;
+    this.hud.setDailyTimer(null);
+    this.hud.setWarning(null);
+    this.hud.showResults({ ...res, date, top: [], bestSprint: this.daily.bestSprint });
+    // async so a server board can slot in; the local one resolves next tick
+    const lb = this.leaderboard;
+    lb.submit(date, res.time)
+      .then(() => lb.top(date, 5))
+      .then((top) => {
+        if (this.state === 'results') {
+          this.hud.showResults({ ...res, date, top, bestSprint: this.daily.bestSprint });
+        }
+      })
+      .catch(() => { /* board unavailable: the local result is already shown */ });
+  }
+
+  private backToAttract() {
+    this.state = 'attract';
+    this.mode = 'arcade';
+    this.goReason = null;
+    this.sinking = 0;
+    this.vehicle.body.setLinearDamping(0);
+    this.crash.repair();
+    this.vehicle.reset(SPAWN, SPAWN_YAW);
+    this.hud.showGameOver(null, 0, 0);
+    this.hud.showResults(null);
+    this.hud.setDailyTimer(null);
+    this.refreshDaily();
+    this.hud.showAttract(true);
+    this.ring.visible = false;
+    this.beacon.visible = false;
+    this.onRespawn?.();
   }
 
   private pointRingAtCurrent() {
@@ -205,6 +297,7 @@ export class Game {
   fixedUpdate(dt: number) {
     this.simTime += dt;
     if (this.state !== 'running') return;
+    this.sprintTime += dt;
 
     // fuel — descending conserves it, climbing burns extra (real DEM slope)
     if (!this.crash.totaled) {
@@ -309,11 +402,15 @@ export class Game {
       const dz = _v.z - cp.z;
       if (dx * dx + dz * dz < 72) {
         this.cpIndex++;
-        this.hud.setCheckpoints(this.cpIndex, this.cpTargets.length);
-        if (this.cpIndex >= this.cpTargets.length) {
+        this.hud.setCheckpoints(this.cpIndex, this.cpTargets.length, this.mode === 'daily');
+        if (this.cpIndex >= this.cpTargets.length && this.mode === 'daily') {
+          this.finishDaily();
+          return;
+        } else if (this.cpIndex >= this.cpTargets.length) {
+          const record = this.daily.recordSprint(this.sprintTime);
           this.credits++;
           this.hud.setCredits(this.credits);
-          this.hud.popup('RACE COMPLETE — CREDIT +1');
+          this.hud.popup(record ? 'BEST SPRINT — CREDIT +1' : 'RACE COMPLETE — CREDIT +1');
           this.rollCheckpoints();
         } else {
           this.hud.popup('CHECKPOINT');
@@ -360,22 +457,16 @@ export class Game {
       this.hud.setCompass((Math.atan2(_v2.x, -_v2.z) * 180) / Math.PI);
       this.hud.setHealth(this.crash.health / 100);
       this.hud.setWarning(this.warn01 > 0 ? this.warn01 : null);
+      this.hud.setDailyTimer(this.mode === 'daily' ? this.sprintTime : null);
+    } else if (this.state === 'results') {
+      this.resultsCountdown -= dt;
+      this.hud.setResultsCountdown(Math.max(0, this.resultsCountdown));
+      if (this.resultsCountdown <= 0) this.backToAttract();
     } else if (this.state === 'gameover') {
       this.goCountdown -= dt;
       this.hud.setWarning(null);
       this.hud.showGameOver(this.goReason ?? 'WRECKED', this.credits, Math.max(0, this.goCountdown));
-      if (this.goCountdown <= 0) {
-        this.state = 'attract';
-        this.goReason = null;
-        this.sinking = 0;
-        this.vehicle.body.setLinearDamping(0);
-        this.crash.repair();
-        this.vehicle.reset(SPAWN, SPAWN_YAW);
-        this.hud.showGameOver(null, 0, 0);
-        this.hud.showAttract(true);
-        this.ring.visible = false;
-        this.beacon.visible = false;
-      }
+      if (this.goCountdown <= 0) this.backToAttract();
     }
     this.hud.update(dt);
   }
