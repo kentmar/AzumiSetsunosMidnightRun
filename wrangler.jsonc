@@ -1,0 +1,9 @@
+// Cloudflare Workers static-assets deploy: `npm run build`, then `npx wrangler deploy`
+// serves dist/ (see README "Deploy"). No Worker script — assets only.
+{
+  "name": "night-run-nyc",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./dist"
+  }
+}
