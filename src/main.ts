@@ -22,6 +22,7 @@ import { Panel } from './panel';
 import { Game } from './game';
 import { Minimap } from './minimap';
 import { AudioSystem } from './audio';
+import { domainAllowed } from './guard';
 
 // Boot + fixed-timestep (60 Hz) physics loop decoupled from render, with
 // interpolation. crash.timeScale drives the slow-mo.
@@ -393,4 +394,4 @@ async function boot() {
   };
 }
 
-boot();
+if (domainAllowed()) boot();
