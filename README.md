@@ -44,7 +44,7 @@ obfuscated (libraries are left minified), no source maps, and [src/guard.ts](src
 locks the game to its own domain — a copy re-hosted elsewhere shows a "not authorized"
 notice linking back to drive.azumisetsuno.com. `azumisetsuno.com` and its subdomains are
 always allowed (so the main site can embed it); add the project's own
-`<project>.pages.dev` / `<name>.<account>.workers.dev` address or any other host via the `ALLOWED_HOSTS`
+`<project>.pages.dev` / `azumisetsunosmidnightrun.<account>.workers.dev` address or any other host via the `ALLOWED_HOSTS`
 env var (comma list). `npm run dev` is never locked. This is a deterrent, not DRM.
 
 ## Feel-tuning workflow
