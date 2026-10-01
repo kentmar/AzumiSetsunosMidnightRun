@@ -11,7 +11,8 @@ import { TUNING } from './tuning';
 import { Input } from './input';
 import { TouchControls, IS_TOUCH } from './touch';
 import { Particles } from './particles';
-import { Sky } from './sky';
+import { Sky, SKY_STATES, dailySkyState, type SkyState } from './sky';
+import { localDateKey } from './daily';
 import { City, FOG, SPAWN, META, nearestEdgePoint, EDGES, elevationAt } from './city';
 import { PlayerVehicle } from './vehicle';
 import { CrashSystem } from './crash';
@@ -22,6 +23,7 @@ import { Panel } from './panel';
 import { Game } from './game';
 import { Minimap } from './minimap';
 import { AudioSystem } from './audio';
+import { domainAllowed } from './guard';
 
 // Boot + fixed-timestep (60 Hz) physics loop decoupled from render, with
 // interpolation. crash.timeScale drives the slow-mo.
@@ -71,6 +73,25 @@ async function boot() {
   game.onRespawn = () => chase.snap(vehicle);
   const minimap = new Minimap(hud.root, IS_TOUCH);
 
+  // tonight's weather rotates with the local date (NR.setSky overrides)
+  const applySky = (st: SkyState) => {
+    sky.setState(st);
+    city.setFog(st.fogColor, st.fogDensity);
+    hud.setSkyLabel(st.label);
+  };
+  applySky(dailySkyState(localDateKey()));
+
+  // daily panel click/tap = run today's route; touch drops the coin first,
+  // same as the tap-anywhere start
+  hud.onDailyTap = () => {
+    const key = (code: string) => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { code }));
+      window.dispatchEvent(new KeyboardEvent('keyup', { code }));
+    };
+    if (IS_TOUCH && game.credits === 0) key('KeyC');
+    key('KeyD');
+  };
+
   if (IS_TOUCH) {
     hud.setTouchMode();
     const key = (code: string) => {
@@ -111,7 +132,7 @@ async function boot() {
   // goes through a keypress or a tap, so we start it on the first one.
   const audio = new AudioSystem();
   const wakeAudio = () => audio.start();
-  for (const code of ['Enter', 'KeyC', 'Space', 'KeyW', 'ArrowUp']) input.onPress(code, wakeAudio);
+  for (const code of ['Enter', 'KeyC', 'KeyD', 'Space', 'KeyW', 'ArrowUp']) input.onPress(code, wakeAudio);
   addEventListener('pointerdown', wakeAudio, { once: false });
   crash.onImpact = (dv) => audio.impact(dv);
   hud.onPopup = (text) => {
@@ -388,9 +409,17 @@ async function boot() {
   requestAnimationFrame(frame);
 
   // debug/inspection handle (dev only)
+  // NR.setSky('supercell') previews a weather state; NR.setSky() restores today's
   (window as unknown as Record<string, unknown>).NR = {
     game, vehicle, crash, chase, world, scene, traffic, parked, minimap, city, elevationAt, audio, RAPIER,
+    sky, daily: game.daily, skyStates: SKY_STATES.map((st) => st.id),
+    setSky: (id?: string) => {
+      const st = id ? SKY_STATES.find((x) => x.id === id) : dailySkyState(localDateKey());
+      if (!st) return `unknown sky: ${SKY_STATES.map((x) => x.id).join(' | ')}`;
+      applySky(st);
+      return st.id;
+    },
   };
 }
 
-boot();
+if (domainAllowed()) boot();
