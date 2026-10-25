@@ -34,18 +34,27 @@ npm run dev        # → http://localhost:5173
 | HUD | [src/hud.ts](src/hud.ts) | Tactical amber/cyan: big MPH, fuel, integrity, credits, checkpoints, boundary warning, attract-screen daily panel (status, streak, tonight's sky), Daily Route clock + results screen. |
 | Bootstrap | [src/main.ts](src/main.ts) | 60 Hz fixed-step accumulator (slow-mo scales sim time), render interpolation, one-shot cubemap for wet-road/paint reflections. `window.NR` = debug handle. |
 
-## Deploy (Cloudflare)
+## Deploy (Cloudflare Pages)
 
-Live at **https://drive.azumisetsuno.com** — a Cloudflare project separate from the
-azumisetsuno.com website. Build command `npm run build`, output directory `dist`
-(Workers builds: deploy command `npx wrangler deploy`, which reads [wrangler.jsonc](wrangler.jsonc)).
+Build `npm run build`, then `npx wrangler pages deploy dist --project-name night-run-nyc`
+(config in [wrangler.jsonc](wrangler.jsonc)). The project name must stay
+`night-run-nyc`: **drive.azumisetsuno.com** is a CNAME to `night-run-nyc.pages.dev`
+held at Google Cloud DNS, where this domain's records live.
+
+Pages rather than Workers, because a Workers Custom Domain requires the hostname to
+be in an active Cloudflare zone, and this domain is not — only Pages validates a
+custom domain over external DNS. After the first deploy, attach the hostname under
+Workers & Pages -> night-run-nyc -> Custom domains; it verifies against the CNAME
+that already exists.
+
 Production builds are hardened in [vite.config.ts](vite.config.ts): game code is
 obfuscated (libraries are left minified), no source maps, and [src/guard.ts](src/guard.ts)
 locks the game to its own domain — a copy re-hosted elsewhere shows a "not authorized"
 notice linking back to drive.azumisetsuno.com. `azumisetsuno.com` and its subdomains are
 always allowed (so the main site can embed it); add the project's own
-`<project>.pages.dev` / `azumisetsunosmidnightrun.<account>.workers.dev` address or any other host via the `ALLOWED_HOSTS`
-env var (comma list). `npm run dev` is never locked. This is a deterrent, not DRM.
+`night-run-nyc.pages.dev` address or any other host via the `ALLOWED_HOSTS` env var
+(comma list) — note that the bare `.pages.dev` URL is blocked by the lock until you do.
+`npm run dev` and localhost are never locked. This is a deterrent, not DRM.
 
 ## Feel-tuning workflow
 

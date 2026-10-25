@@ -1,9 +1,15 @@
-// Cloudflare Workers static-assets deploy: `npm run build`, then `npx wrangler deploy`
-// serves dist/ (see README "Deploy"). No Worker script — assets only.
+// Cloudflare PAGES deploy: `npm run build`, then
+//   npx wrangler pages deploy dist --project-name night-run-nyc
+//
+// Pages, not Workers, deliberately. azumisetsuno.com's DNS lives at Google
+// Cloud DNS (the apex points at Squarespace), and a Workers Custom Domain
+// requires the hostname to sit in an active Cloudflare zone. Pages is the only
+// Cloudflare product that accepts a custom domain validated over EXTERNAL DNS,
+// which is what drive.azumisetsuno.com already is: a CNAME to
+// night-run-nyc.pages.dev. Hence the project name below — it has to match that
+// existing record, or the CNAME has to change.
 {
-  "name": "azumisetsunosmidnightrun",
+  "name": "night-run-nyc",
   "compatibility_date": "2026-09-01",
-  "assets": {
-    "directory": "./dist"
-  }
+  "pages_build_output_dir": "./dist"
 }
