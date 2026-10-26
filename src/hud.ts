@@ -208,7 +208,7 @@ export class Hud {
     // ---- attract screen ----
     this.attractEl = el(this.root, `position:absolute;inset:0;display:flex;flex-direction:column;
       align-items:center;justify-content:center;background:rgba(5,2,6,0.35);`);
-    el(this.attractEl, `font-size:15px;letter-spacing:12px;color:${CYAN};margin-bottom:10px;`, 'MIDNIGHT ARCADE PRESENTS');
+    el(this.attractEl, `font-size:15px;letter-spacing:12px;color:${CYAN};margin-bottom:10px;`, 'AZUMI SETSUNO PRESENTS');
     el(this.attractEl, `font-size:76px;font-weight:900;letter-spacing:10px;line-height:1;
       text-shadow:0 0 30px rgba(255,90,40,0.9),0 0 60px rgba(255,40,40,0.5);`, 'NIGHT RUN');
     el(this.attractEl, `font-size:30px;font-weight:700;letter-spacing:26px;color:${RED};
