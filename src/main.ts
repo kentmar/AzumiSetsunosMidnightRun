@@ -99,6 +99,11 @@ async function boot() {
       window.dispatchEvent(new KeyboardEvent('keyup', { code }));
     };
     new TouchControls(input, () => {
+      // first tap during the intro only cuts the cinematic short
+      if (chase.introActive) {
+        chase.skipIntro();
+        return;
+      }
       // tap = coin + start on the attract / game-over screens
       if (game.state !== 'running') {
         key('KeyC');
@@ -304,6 +309,15 @@ async function boot() {
   const camPos = new THREE.Vector3();
   const mapFwd = new THREE.Vector3();
 
+  // any key or tap during the intro cuts straight to the attract orbit
+  let lastState: string | null = null;
+  let introPlayed = false;
+  const skipIntro = () => {
+    if (chase.introActive && chase.introFreeze === undefined) chase.skipIntro();
+  };
+  addEventListener('keydown', skipIntro);
+  addEventListener('pointerdown', skipIntro);
+
   let lastRender = 0;
   function frame(now: number) {
     requestAnimationFrame(frame);
@@ -349,11 +363,22 @@ async function boot() {
     particles.update(realDt * crash.timeScale);
 
     if (game.state === 'attract') {
+      // the cinematic runs once, on boot — coming back from a run drops
+      // straight onto the orbit (drop the `!introPlayed` test to replay it)
+      if (lastState !== 'attract' && !introPlayed) {
+        introPlayed = true;
+        chase.startIntro(vehicle);
+        hud.setCinematic(true);
+      }
       vehicle.worldPosition(camPos);
-      chase.attract(now / 1000, camPos);
+      chase.attract(now / 1000, camPos, realDt);
+      if (!chase.introActive) hud.setCinematic(false);
     } else {
+      if (chase.introActive) chase.skipIntro();
+      hud.setCinematic(false);
       chase.update(realDt, vehicle, crash);
     }
+    lastState = game.state;
     audio.update(realDt, {
       running: game.state === 'running',
       speed: vehicle.speed,

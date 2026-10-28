@@ -519,6 +519,27 @@ export class Hud {
       { duration: 320, easing: 'ease-out' }
     );
   }
+  /** intro cinematic: letterbox in, every overlay faded out; reverses on landing */
+  private bars: HTMLDivElement[] = [];
+  private cinematic = false;
+  setCinematic(on: boolean) {
+    if (on === this.cinematic) return;
+    this.cinematic = on;
+    if (!this.bars.length) {
+      for (const edge of ['top', 'bottom']) {
+        const b = document.createElement('div');
+        b.style.cssText = `position:fixed;left:0;right:0;${edge}:0;height:0;background:#000;
+          z-index:11;pointer-events:none;transition:height 0.7s cubic-bezier(.6,0,.2,1);`;
+        document.body.appendChild(b);
+        this.bars.push(b);
+      }
+    }
+    // 2.39:1 inside whatever the window is
+    const h = `max(0px, calc((100vh - 100vw / 2.39) / 2))`;
+    for (const b of this.bars) b.style.height = on ? h : '0';
+    this.root.style.transition = on ? 'none' : 'opacity 0.9s ease 0.35s';
+    this.root.style.opacity = on ? '0' : '1';
+  }
   showAttract(v: boolean) {
     this.attractEl.style.display = v ? 'flex' : 'none';
   }
