@@ -16,6 +16,13 @@ npm run dev        # → http://localhost:5173
 `D` run today's Daily Route (attract screen; or click/tap the DAILY ROUTE panel) ·
 `P` tuning panel · `ESC` pause
 
+**Touch (phones/tablets, or `?touch` on desktop):** left thumb drags across the steering
+pad (analog — further from centre = more lock, slide across to flip direction); right
+thumb on GAS, roll left for BRK, DRIFT above. ⟳ flip and ❚❚ pause top-left; tap the
+minimap for the full map; tap the pause screen to resume. The layout re-flows per
+orientation (landscape recommended) — geometry lives in [src/layout.ts](src/layout.ts).
+Starting a run requests fullscreen where the browser allows it (Android, iPad).
+
 ## Where things live
 
 | System | File | Notes |
@@ -32,6 +39,7 @@ npm run dev        # → http://localhost:5173
 | Traffic | [src/traffic.ts](src/traffic.ts) | ~11 lane-following kinematic cars that stop at lights; convert to dynamic bodies and go flying when rammed. |
 | Game loop | [src/game.ts](src/game.ts) | Attract / credits / checkpoint sprint (+1 credit per set) / Daily Route run → results / fuel + gas pickups / bridge-boundary detonation. |
 | HUD | [src/hud.ts](src/hud.ts) | Tactical amber/cyan: big MPH, fuel, integrity, credits, checkpoints, boundary warning, attract-screen daily panel (status, streak, tonight's sky), Daily Route clock + results screen. |
+| Responsive / touch layout | [src/layout.ts](src/layout.ts) | One injected stylesheet: viewport-scaled attract/game-over/pause text for every screen, plus the touch layout (thumb zones, chips, minimap, speed) per orientation via media queries. `body.nr-menu` hides pedals + driving HUD behind menus. |
 | Bootstrap | [src/main.ts](src/main.ts) | 60 Hz fixed-step accumulator (slow-mo scales sim time), render interpolation, one-shot cubemap for wet-road/paint reflections. `window.NR` = debug handle. |
 
 ## Deploy (Cloudflare Pages)
@@ -71,3 +79,10 @@ JSON at build time), pure client-side web.
 
 Not yet in this pass: audio, gamepad, skid marks, server leaderboard, Google Photorealistic
 3D Tiles mode (possible later; needs a billed Google Cloud API key).
+
+## Claude Code skills
+
+[.claude/skills/](.claude/skills/) holds third-party game-dev skills Claude Code loads when
+working here (UI/UX, input, game feel, camera, performance, three.js setup). Sources and
+licences are in [.claude/skills/README.md](.claude/skills/README.md) — note `ui-ux-game` is
+GPL-3.0 and is guidance only; never copy code from it into `src/`.

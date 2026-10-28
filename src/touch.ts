@@ -1,8 +1,10 @@
 import type { Input } from './input';
+import { installHudStyles } from './layout';
 
 // On-screen touch controls. They write into Input.virtual, so the vehicle code
 // is agnostic about where input comes from. Pointer events (not touch events)
-// so multi-touch works per-button and desktop clicks work for testing.
+// so multi-touch works per-control and desktop clicks work for testing.
+// Geometry lives in layout.ts (orientation-aware); this file is behaviour only.
 
 export const IS_TOUCH =
   typeof window !== 'undefined' &&
@@ -10,61 +12,96 @@ export const IS_TOUCH =
     navigator.maxTouchPoints > 0 ||
     new URLSearchParams(location.search).has('touch'));
 
-const BTN_BASE = `
-  position:absolute;display:flex;align-items:center;justify-content:center;
-  border:2px solid rgba(255,184,77,0.55);border-radius:18px;
-  background:rgba(10,6,14,0.45);color:#ffb84d;font-weight:800;
-  letter-spacing:2px;text-shadow:0 0 10px rgba(255,150,40,0.6);
-  pointer-events:auto;touch-action:none;user-select:none;-webkit-user-select:none;`;
+// steering pad response: dead band around the centre line, full lock
+// before the thumb reaches the pad's outer edge
+const STEER_DEAD = 0.14;
+const STEER_FULL = 0.62;
 
 export class TouchControls {
   root: HTMLDivElement;
 
   constructor(input: Input, onTap: () => void) {
+    installHudStyles(true);
     this.root = document.createElement('div');
     this.root.style.cssText = `position:fixed;inset:0;pointer-events:none;z-index:20;
       font-family:"Avenir Next","Segoe UI",Roboto,sans-serif;`;
     document.body.appendChild(this.root);
 
-    // steer, bottom-left
-    this.btn('&#9664;', `left:calc(16px + env(safe-area-inset-left));bottom:calc(22px + env(safe-area-inset-bottom));width:84px;height:84px;font-size:30px;`,
-      () => { input.virtual.steer = 1; },
-      () => { if (input.virtual.steer === 1) input.virtual.steer = 0; });
-    this.btn('&#9654;', `left:calc(112px + env(safe-area-inset-left));bottom:calc(22px + env(safe-area-inset-bottom));width:84px;height:84px;font-size:30px;`,
-      () => { input.virtual.steer = -1; },
-      () => { if (input.virtual.steer === -1) input.virtual.steer = 0; });
+    this.steerPad(input);
 
-    // pedals: single column on the right so narrow portrait screens never overlap
-    this.btn('GAS', `right:calc(16px + env(safe-area-inset-right));bottom:calc(22px + env(safe-area-inset-bottom));width:96px;height:96px;font-size:19px;border-color:rgba(90,230,140,0.6);color:#5ae68c;`,
+    // pedals: GAS under the right thumb, BRK one roll to the left, DRIFT above
+    this.btn('nr-gas', 'GAS',
       () => { input.virtual.throttle = 1; },
       () => { input.virtual.throttle = 0; });
-    this.btn('BRK', `right:calc(16px + env(safe-area-inset-right));bottom:calc(128px + env(safe-area-inset-bottom));width:96px;height:64px;font-size:16px;border-color:rgba(255,80,90,0.6);color:#ff5a5f;`,
+    this.btn('nr-brk', 'BRK',
       () => { input.virtual.brake = 1; },
       () => { input.virtual.brake = 0; });
-    this.btn('DRIFT', `right:calc(16px + env(safe-area-inset-right));bottom:calc(202px + env(safe-area-inset-bottom));width:96px;height:52px;font-size:15px;border-color:rgba(88,230,255,0.6);color:#58e6ff;`,
+    this.btn('nr-drift', 'DRIFT',
       () => { input.virtual.handbrake = true; },
       () => { input.virtual.handbrake = false; });
 
-    // small utility buttons, top-left under the integrity bar
+    // flip rescue + pause, top-left
     const key = (code: string) => {
       window.dispatchEvent(new KeyboardEvent('keydown', { code }));
       window.dispatchEvent(new KeyboardEvent('keyup', { code }));
     };
-    this.btn('&#10227;', `left:calc(16px + env(safe-area-inset-left));top:calc(64px + env(safe-area-inset-top));width:46px;height:40px;font-size:20px;opacity:0.8;`,
-      () => key('KeyR'), () => {});
-    this.btn('&#10074;&#10074;', `left:calc(70px + env(safe-area-inset-left));top:calc(64px + env(safe-area-inset-top));width:46px;height:40px;font-size:13px;opacity:0.8;`,
-      () => key('Escape'), () => {});
+    this.btn('nr-util nr-util-reset', '&#10227;', () => key('KeyR'), () => {});
+    this.btn('nr-util nr-util-pause', '&#10074;&#10074;', () => key('Escape'), () => {});
 
-    // tap anywhere (not on a button) = coin/start on attract & game-over screens
+    // tap anywhere (not on a control) = coin/start on attract & game-over screens
     window.addEventListener('pointerdown', (e) => {
-      if ((e.target as HTMLElement | null)?.dataset?.nrbtn) return;
+      if ((e.target as HTMLElement | null)?.closest?.('[data-nrbtn]')) return;
       onTap();
     });
   }
 
-  private btn(html: string, style: string, on: () => void, off: () => void) {
+  /** one wide pad: where the thumb sits left/right of centre is the steer
+   *  amount, so sliding across flips direction without lifting */
+  private steerPad(input: Input) {
+    const pad = document.createElement('div');
+    pad.className = 'nr-tc nr-steer';
+    pad.dataset.nrbtn = '1';
+    pad.innerHTML = '<span class="nr-steer-l">&#9664;</span><i></i><span class="nr-steer-r">&#9654;</span>';
+    let active: number | null = null;
+
+    const apply = (e: PointerEvent) => {
+      const r = pad.getBoundingClientRect();
+      const x = ((e.clientX - r.left) / r.width) * 2 - 1; // -1 left edge .. +1 right edge
+      const m = Math.abs(x);
+      const s = m < STEER_DEAD ? 0 : Math.min(1, (m - STEER_DEAD) / (STEER_FULL - STEER_DEAD));
+      input.virtual.steer = -Math.sign(x) * s; // +1 = left in the vehicle's convention
+      pad.classList.toggle('l', s > 0 && x < 0);
+      pad.classList.toggle('r', s > 0 && x > 0);
+    };
+    const release = () => {
+      active = null;
+      input.virtual.steer = 0;
+      pad.classList.remove('l', 'r');
+    };
+    pad.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (active !== null) return;
+      active = e.pointerId;
+      try {
+        pad.setPointerCapture(e.pointerId); // keep tracking if the thumb slides off
+      } catch { /* synthetic pointers can't be captured */ }
+      apply(e);
+    });
+    pad.addEventListener('pointermove', (e) => {
+      if (e.pointerId === active) apply(e);
+    });
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
+      pad.addEventListener(ev, (e) => {
+        if (e.pointerId === active) release();
+      });
+    }
+    this.root.appendChild(pad);
+  }
+
+  private btn(cls: string, html: string, on: () => void, off: () => void) {
     const b = document.createElement('div');
-    b.style.cssText = BTN_BASE + style;
+    b.className = `nr-tc ${cls}`;
     b.innerHTML = html;
     b.dataset.nrbtn = '1';
     const down = (e: PointerEvent) => {
@@ -73,12 +110,12 @@ export class TouchControls {
       try {
         b.setPointerCapture(e.pointerId); // keeps release firing if finger slides off
       } catch { /* synthetic pointers can't be captured */ }
-      b.style.background = 'rgba(255,184,77,0.28)';
+      b.classList.add('on');
       on();
     };
     const up = (e: PointerEvent) => {
       e.preventDefault();
-      b.style.background = 'rgba(10,6,14,0.45)';
+      b.classList.remove('on');
       off();
     };
     b.addEventListener('pointerdown', down);

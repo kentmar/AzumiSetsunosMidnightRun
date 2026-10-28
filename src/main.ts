@@ -81,9 +81,18 @@ async function boot() {
   };
   applySky(dailySkyState(localDateKey()));
 
+  // phones: starting a run hides the browser bars where the API exists
+  // (Android Chrome, iPad; iPhone Safari has none and this is a no-op)
+  const goFullscreen = () => {
+    const el = document.documentElement;
+    if (document.fullscreenElement || !el.requestFullscreen) return;
+    el.requestFullscreen({ navigationUI: 'hide' }).catch(() => { /* denied: keep playing windowed */ });
+  };
+
   // daily panel click/tap = run today's route; touch drops the coin first,
   // same as the tap-anywhere start
   hud.onDailyTap = () => {
+    if (IS_TOUCH) goFullscreen();
     const key = (code: string) => {
       window.dispatchEvent(new KeyboardEvent('keydown', { code }));
       window.dispatchEvent(new KeyboardEvent('keyup', { code }));
@@ -101,6 +110,7 @@ async function boot() {
     new TouchControls(input, () => {
       // tap = coin + start on the attract / game-over screens
       if (game.state !== 'running') {
+        goFullscreen();
         key('KeyC');
         setTimeout(() => key('Enter'), 90);
       }
@@ -251,6 +261,7 @@ async function boot() {
     paused = v;
     hud.showPause(paused);
   };
+  hud.onPauseTap = () => setPaused(false);
   // fullscreen map (M / MAP button); sim freezes while it's open
   let mapOpen = false;
   const setMap = (v: boolean) => {

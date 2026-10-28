@@ -5,6 +5,7 @@ import { MAX_RPM, REDLINE_RPM } from './vehicle';
 import {
   DAILY_BONUS, STREAK_MILESTONES, formatTime, type DailyResult, type LeaderboardEntry,
 } from './daily';
+import { installHudStyles } from './layout';
 
 /** everything the Daily Route results screen shows */
 export interface ResultsView extends DailyResult {
@@ -17,12 +18,18 @@ const AMBER = '#ffb84d';
 const CYAN = '#58e6ff';
 const RED = '#ff4455';
 
-function el(parent: HTMLElement, style: string, html = ''): HTMLDivElement {
+function el(parent: HTMLElement, style: string, html = '', cls = ''): HTMLDivElement {
   const d = document.createElement('div');
   d.style.cssText = style;
   d.innerHTML = html;
+  if (cls) d.className = cls;
   parent.appendChild(d);
   return d;
+}
+
+/** drop an element's inline anchoring so the touch stylesheet can place it */
+function unpin(e: HTMLElement) {
+  for (const k of ['left', 'right', 'top', 'bottom', 'transform']) e.style.removeProperty(k);
 }
 
 const DIM = 'rgba(255,255,255,0.20)';
@@ -113,6 +120,7 @@ export class Hud {
   private popupT = 0;
 
   constructor() {
+    installHudStyles(false);
     this.root = document.createElement('div');
     this.root.style.cssText = `position:fixed;inset:0;pointer-events:none;color:${AMBER};
       font-family:"Avenir Next","Segoe UI",Roboto,sans-serif;z-index:10;
@@ -126,7 +134,7 @@ export class Hud {
     // Gauges thrown wide to the screen edges; speed and gear ride the right,
     // clear of the road and of the minimap below them.
     const fuelCol = el(this.root, `position:absolute;left:26px;bottom:18px;
-      display:flex;flex-direction:column;align-items:center;gap:5px;`);
+      display:flex;flex-direction:column;align-items:center;gap:5px;`, '', 'nr-fuelcol nr-chrome');
     el(fuelCol, `font-size:9px;letter-spacing:3px;opacity:0.55;`, '100%');
     this.fuelGauge = this.buildArcGauge(fuelCol, -1);
     this.fuelReadout = el(fuelCol, `padding:3px 9px;`, '');
@@ -134,17 +142,20 @@ export class Hud {
     this.fuelLabel = el(fuelCol, `font-size:9px;letter-spacing:3px;opacity:0.7;`, 'FUEL %');
 
     const speedCluster = el(this.root, `position:absolute;right:272px;bottom:18px;
-      display:flex;align-items:flex-end;gap:16px;`);
+      display:flex;align-items:flex-end;gap:16px;`, '', 'nr-speed nr-chrome');
     this.cluster = speedCluster;
 
-    const mid = el(speedCluster, `display:flex;flex-direction:column;align-items:flex-end;`);
+    const mid = el(speedCluster, `display:flex;flex-direction:column;align-items:flex-end;`, '', 'nr-speed-mid');
     this.mph = el(mid, `height:58px;display:flex;align-items:center;`, '');
     el(mid, `font-size:11px;letter-spacing:7px;opacity:0.8;margin-top:6px;color:#fff;`, 'MPH');
     this.gear = el(mid, `font-size:15px;letter-spacing:2px;color:${AMBER};margin-top:9px;
       padding:2px 11px;`, 'G1');
     brackets(this.gear, 'rgba(255,184,77,0.5)', 5);
+    // touch layout drops the side gauges; fuel rides under the speed instead
+    const tFuel = el(mid, `width:96px;height:5px;margin-top:8px;background:${DIM};`, '', 'nr-touch-only');
+    this.touchFuel = el(tFuel, `height:100%;width:100%;background:${AMBER};`);
 
-    const revCol = el(speedCluster, `display:flex;flex-direction:column;align-items:center;gap:5px;`);
+    const revCol = el(speedCluster, `display:flex;flex-direction:column;align-items:center;gap:5px;`, '', 'nr-rev');
     el(revCol, `font-size:9px;letter-spacing:3px;color:${RED};opacity:0.7;`, 'REDLINE');
     this.revGauge = this.buildArcGauge(revCol, 1);
     this.revReadout = el(revCol, `padding:3px 9px;`, '');
@@ -155,8 +166,9 @@ export class Hud {
     this.buildCompass();
 
     // ---- integrity, top-left ----
-    const hBox = el(this.root, `position:absolute;left:34px;top:26px;`);
-    el(hBox, `font-size:10px;letter-spacing:5px;margin-bottom:6px;opacity:0.85;`, 'INTEGRITY');
+    const hBox = el(this.root, `position:absolute;left:34px;top:26px;`, '', 'nr-integrity nr-chrome');
+    this.hBox = hBox;
+    el(hBox, `font-size:10px;letter-spacing:5px;margin-bottom:6px;opacity:0.85;`, 'INTEGRITY', 'nr-int-label');
     const hFrame = el(hBox, `padding:5px 7px;`);
     brackets(hFrame, 'rgba(255,255,255,0.35)');
     this.healthSegs = [];
@@ -167,53 +179,60 @@ export class Hud {
 
     // ---- credits + mileage + checkpoints, top-right ----
     const tr = el(this.root, `position:absolute;right:34px;top:26px;
-      display:flex;flex-direction:column;align-items:flex-end;gap:7px;`);
+      display:flex;flex-direction:column;align-items:flex-end;gap:7px;`, '', 'nr-status nr-chrome');
+    this.statusEl = tr;
     const trTop = el(tr, `display:flex;align-items:center;gap:10px;`);
-    this.credits = el(trTop, `font-size:15px;letter-spacing:3px;padding:4px 12px;`, 'CREDITS 1');
+    this.credits = el(trTop, `font-size:15px;letter-spacing:3px;padding:4px 12px;`, 'CREDITS 1', 'nr-chip');
     brackets(this.credits, 'rgba(255,184,77,0.45)', 5);
-    this.odo = el(trTop, `font-size:15px;letter-spacing:2px;padding:4px 12px;color:#fff;`, '0.0 MI');
+    this.odo = el(trTop, `font-size:15px;letter-spacing:2px;padding:4px 12px;color:#fff;`, '0.0 MI', 'nr-chip nr-odo');
     brackets(this.odo, 'rgba(255,255,255,0.35)', 5);
-    this.checkpoints = el(tr, `font-size:15px;letter-spacing:3px;color:${CYAN};padding:4px 12px;`, '');
+    this.checkpoints = el(tr, `font-size:15px;letter-spacing:3px;color:${CYAN};padding:4px 12px;`, '', 'nr-chip');
     brackets(this.checkpoints, 'rgba(88,230,255,0.45)', 5);
     this.tripLine = el(tr, `font-size:10px;letter-spacing:2px;opacity:0.6;color:#fff;`,
-      'TRIP 0.0 MI &middot; 0:00');
+      'TRIP 0.0 MI &middot; 0:00', 'nr-trip');
     // Daily Route clock (stays visible on touch, unlike the trip line)
-    this.dailyTimer = el(tr, `font-size:15px;letter-spacing:3px;color:${AMBER};padding:4px 12px;display:none;`);
+    this.dailyTimer = el(tr, `font-size:15px;letter-spacing:3px;color:${AMBER};padding:4px 12px;display:none;`, '', 'nr-chip');
     brackets(this.dailyTimer, 'rgba(255,184,77,0.45)', 5);
 
     // boundary warning, top-center
     this.warning = el(this.root, `position:absolute;left:50%;transform:translateX(-50%);top:56px;
       font-size:22px;font-weight:700;letter-spacing:6px;color:${RED};text-align:center;
       text-shadow:0 0 16px rgba(255,40,60,0.9);display:none;
-      border:1px solid ${RED};padding:8px 22px;background:rgba(60,0,8,0.45);`);
+      border:1px solid ${RED};padding:8px 22px;background:rgba(60,0,8,0.45);`, '', 'nr-warning');
 
     // center popup
     this.popupEl = el(this.root, `position:absolute;left:50%;top:34%;transform:translate(-50%,-50%);
       font-size:34px;font-weight:800;letter-spacing:8px;color:${CYAN};opacity:0;
-      text-shadow:0 0 20px rgba(80,220,255,0.9);transition:opacity 0.2s;`);
+      text-shadow:0 0 20px rgba(80,220,255,0.9);transition:opacity 0.2s;`, '', 'nr-popup');
 
     // impact flash
     this.flashEl = el(this.root, `position:absolute;inset:0;background:#fff;opacity:0;`);
 
     // pause overlay
     this.pauseEl = el(this.root, `position:absolute;inset:0;display:none;flex-direction:column;
-      align-items:center;justify-content:center;background:rgba(4,2,8,0.55);`);
+      align-items:center;justify-content:center;background:rgba(4,2,8,0.55);`, '', 'nr-pause');
+    this.pauseEl.dataset.nrbtn = '1';
+    // touch: the whole overlay is the resume button (pointer-events from layout.ts)
+    this.pauseEl.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.onPauseTap?.();
+    });
     el(this.pauseEl, `font-size:52px;font-weight:900;letter-spacing:14px;
-      text-shadow:0 0 24px rgba(255,150,40,0.8);`, 'PAUSED');
-    el(this.pauseEl, `font-size:14px;letter-spacing:4px;margin-top:18px;color:${CYAN};`,
+      text-shadow:0 0 24px rgba(255,150,40,0.8);`, 'PAUSED', 'nr-pause-title');
+    this.pauseHint = el(this.pauseEl, `font-size:14px;letter-spacing:4px;margin-top:18px;color:${CYAN};`,
       'ESC TO RESUME');
 
-    this.fpsEl = el(this.root, `position:absolute;right:8px;bottom:6px;font-size:10px;opacity:0.5;letter-spacing:2px;`);
+    this.fpsEl = el(this.root, `position:absolute;right:8px;bottom:6px;font-size:10px;opacity:0.5;letter-spacing:2px;`, '', 'nr-fps');
 
     // ---- attract screen ----
     this.attractEl = el(this.root, `position:absolute;inset:0;display:flex;flex-direction:column;
-      align-items:center;justify-content:center;background:rgba(5,2,6,0.35);`);
-    el(this.attractEl, `font-size:15px;letter-spacing:12px;color:${CYAN};margin-bottom:10px;`, 'AZUMI SETSUNO PRESENTS');
+      align-items:center;justify-content:center;background:rgba(5,2,6,0.35);`, '', 'nr-attract');
+    el(this.attractEl, `font-size:15px;letter-spacing:12px;color:${CYAN};margin-bottom:10px;`, 'AZUMI SETSUNO PRESENTS', 'nr-a-presents');
     el(this.attractEl, `font-size:76px;font-weight:900;letter-spacing:10px;line-height:1;
-      text-shadow:0 0 30px rgba(255,90,40,0.9),0 0 60px rgba(255,40,40,0.5);`, 'NIGHT RUN');
+      text-shadow:0 0 30px rgba(255,90,40,0.9),0 0 60px rgba(255,40,40,0.5);`, 'NIGHT RUN', 'nr-a-title');
     el(this.attractEl, `font-size:30px;font-weight:700;letter-spacing:26px;color:${RED};
-      text-shadow:0 0 20px rgba(255,60,60,0.8);margin-top:4px;`, 'N Y C');
-    const coin = el(this.attractEl, `font-size:24px;letter-spacing:8px;margin-top:56px;font-weight:700;`, 'INSERT COIN [ C ]');
+      text-shadow:0 0 20px rgba(255,60,60,0.8);margin-top:4px;`, 'N Y C', 'nr-a-nyc');
+    const coin = el(this.attractEl, `font-size:24px;letter-spacing:8px;margin-top:56px;font-weight:700;`, 'INSERT COIN [ C ]', 'nr-a-coin');
     coin.animate([{ opacity: 1 }, { opacity: 0.15 }, { opacity: 1 }], { duration: 1300, iterations: Infinity });
     this.coinEl = coin;
     this.attractCreditLine = el(this.attractEl, `font-size:16px;letter-spacing:4px;margin-top:14px;color:${CYAN};`, '');
@@ -222,7 +241,7 @@ export class Hud {
     // (data-nrbtn keeps the touch "tap anywhere" coin/start from firing too)
     this.dailyEl = el(this.attractEl, `margin-top:26px;padding:10px 22px;text-align:center;
       pointer-events:auto;cursor:pointer;background:rgba(6,4,10,0.45);line-height:1.9;
-      max-width:calc(100vw - 32px);box-sizing:border-box;`);
+      max-width:calc(100vw - 32px);box-sizing:border-box;`, '', 'nr-a-daily');
     this.dailyEl.dataset.nrbtn = '1';
     this.dailyEl.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
@@ -231,20 +250,26 @@ export class Hud {
     this.dailyBody = el(this.dailyEl, `pointer-events:none;`);
     brackets(this.dailyEl, 'rgba(88,230,255,0.55)', 7);
     this.hintEl = el(this.attractEl, `font-size:12px;letter-spacing:3px;margin-top:44px;opacity:0.75;line-height:2;text-align:center;`,
-      'W/&#8593; THROTTLE &nbsp; S/&#8595; BRAKE &nbsp; A D STEER &nbsp; SPACE HANDBRAKE<br/>R FLIP RESCUE &nbsp; P TUNING PANEL &nbsp; RUN THE BLUE RINGS &nbsp; TUNNELS WARP CROSSTOWN');
-    this.dataStampEl = el(this.attractEl, `font-size:10px;letter-spacing:2px;margin-top:26px;opacity:0.5;text-align:center;line-height:1.8;`);
+      'W/&#8593; THROTTLE &nbsp; S/&#8595; BRAKE &nbsp; A D STEER &nbsp; SPACE HANDBRAKE<br/>R FLIP RESCUE &nbsp; P TUNING PANEL &nbsp; RUN THE BLUE RINGS &nbsp; TUNNELS WARP CROSSTOWN',
+      'nr-a-hint');
+    el(this.attractEl, `font-size:11px;letter-spacing:3px;margin-top:18px;color:${CYAN};opacity:0.8;`,
+      '&#10227; TURN SIDEWAYS FOR THE FULL VIEW', 'nr-rotate-hint');
+    this.dataStampEl = el(this.attractEl, `font-size:10px;letter-spacing:2px;margin-top:26px;opacity:0.5;text-align:center;line-height:1.8;`,
+      '', 'nr-a-stamp');
 
     // ---- game over ----
     this.gameOverEl = el(this.root, `position:absolute;inset:0;display:none;flex-direction:column;
       align-items:center;justify-content:center;background:rgba(20,0,4,0.45);`);
     this.goReason = el(this.gameOverEl, `font-size:64px;font-weight:900;letter-spacing:10px;color:${RED};
-      text-shadow:0 0 30px rgba(255,40,60,0.9);`, 'WRECKED');
-    el(this.gameOverEl, `font-size:26px;letter-spacing:8px;margin-top:20px;`, 'GAME OVER');
-    this.goPrompt = el(this.gameOverEl, `font-size:20px;letter-spacing:4px;margin-top:40px;color:${CYAN};text-align:center;line-height:2;`);
+      text-shadow:0 0 30px rgba(255,40,60,0.9);`, 'WRECKED', 'nr-go-reason');
+    el(this.gameOverEl, `font-size:26px;letter-spacing:8px;margin-top:20px;`, 'GAME OVER', 'nr-go-title');
+    this.goPrompt = el(this.gameOverEl, `font-size:20px;letter-spacing:4px;margin-top:40px;color:${CYAN};text-align:center;line-height:2;`,
+      '', 'nr-go-prompt');
 
     // ---- daily results ----
     this.resultsEl = el(this.root, `position:absolute;inset:0;display:none;flex-direction:column;
-      align-items:center;justify-content:center;background:rgba(2,4,10,0.72);text-align:center;`);
+      align-items:center;justify-content:center;background:rgba(2,4,10,0.72);text-align:center;
+      overflow-y:auto;padding:16px;box-sizing:border-box;`);
     this.resultsBody = el(this.resultsEl, ``);
     this.resultsPrompt = el(this.resultsEl, `font-size:16px;letter-spacing:4px;margin-top:26px;color:${CYAN};`);
   }
@@ -255,6 +280,21 @@ export class Hud {
   private resultsEl!: HTMLDivElement;
   private resultsBody!: HTMLDivElement;
   private resultsPrompt!: HTMLDivElement;
+  private hBox!: HTMLDivElement;
+  private statusEl!: HTMLDivElement;
+  private touchFuel!: HTMLDivElement;
+  private pauseHint!: HTMLDivElement;
+  private speedSize = 58;
+  private creditCount = 0;
+  private menus = { attract: true, gameOver: false, results: false };
+  /** set by main: the pause overlay was tapped (touch resume) */
+  onPauseTap?: () => void;
+
+  /** menus own the screen: body.nr-menu hides pedals + driving HUD (touch layout) */
+  private syncMenus() {
+    const m = this.menus;
+    document.body.classList.toggle('nr-menu', m.attract || m.gameOver || m.results);
+  }
   private skyLabel = '';
   private dailyArgs: [string, number, number | null] = ['', 0, null];
   /** set by main: the daily panel was clicked/tapped */
@@ -294,6 +334,8 @@ export class Hud {
   }
 
   showResults(r: ResultsView | null) {
+    this.menus.results = !!r;
+    this.syncMenus();
     if (!r) {
       this.resultsEl.style.display = 'none';
       return;
@@ -313,20 +355,22 @@ export class Hud {
     const rows = r.top.map((e, i) => {
       const mine = !marked && Math.abs(e.time - r.time) < 1e-6;
       if (mine) marked = true;
-      return `<div style="display:flex;justify-content:space-between;gap:40px;
+      return `<div style="display:flex;justify-content:space-between;gap:clamp(16px, 6vw, 40px);
         color:${mine ? AMBER : '#fff'};opacity:${mine ? 1 : 0.75};">
         <span>${i + 1}. ${e.name}</span><span>${formatTime(e.time)}</span></div>`;
     }).join('');
     this.resultsBody.innerHTML = `
-      <div style="font-size:14px;letter-spacing:10px;color:${CYAN};">DAILY ROUTE &middot; ${r.date}</div>
-      <div style="font-size:44px;font-weight:900;letter-spacing:8px;margin-top:8px;
+      <div style="font-size:clamp(10px, 3vw, 14px);letter-spacing:0.7em;color:${CYAN};">DAILY ROUTE &middot; ${r.date}</div>
+      <div style="font-size:clamp(28px, 9vw, 44px);font-weight:900;letter-spacing:0.18em;margin-top:8px;
         text-shadow:0 0 26px rgba(255,150,40,0.8);">COMPLETE</div>
-      <div style="display:flex;justify-content:center;margin-top:16px;">${numerals(formatTime(r.time), 46, '#fff', 1.05, 2.1)}</div>
+      <div style="display:flex;justify-content:center;margin-top:16px;">${
+        numerals(formatTime(r.time), Math.round(Math.min(46, innerWidth / 9, innerHeight / 9)), '#fff', 1.05, 2.1)}</div>
       <div style="margin-top:8px;font-size:13px;letter-spacing:3px;">${
         tag(r.newDayBest, 'TODAY&#39;S BEST')}${tag(r.newAllTime, 'ALL-TIME BEST')}</div>
       <div style="margin-top:14px;font-size:15px;letter-spacing:3px;color:${AMBER};line-height:1.8;">${pays.join('<br/>')}</div>
       <div style="margin-top:6px;font-size:13px;letter-spacing:3px;color:#fff;">STREAK ${r.streak} DAY${r.streak === 1 ? '' : 'S'}</div>
-      <div style="position:relative;margin:22px auto 0;padding:12px 20px;width:max-content;min-width:260px;
+      <div style="position:relative;margin:22px auto 0;padding:12px 20px;width:max-content;min-width:min(260px, 100%);
+        max-width:100%;box-sizing:border-box;
         font-size:14px;letter-spacing:3px;line-height:1.9;background:rgba(6,4,10,0.45);" data-lb>
         <div style="font-size:11px;letter-spacing:5px;color:${CYAN};margin-bottom:4px;">TODAY &middot; TOP 5</div>
         ${rows || `<div style="opacity:0.5;">&mdash;</div>`}
@@ -365,13 +409,20 @@ export class Hud {
     this.coinEl.textContent = 'TAP TO START';
     this.hintEl.innerHTML =
       'ON-SCREEN PEDALS &nbsp; DRIFT = HANDBRAKE<br/>&#10227; FLIP RESCUE &nbsp; &#10074;&#10074; PAUSE &nbsp; RUN THE BLUE RINGS';
-    // compact the cluster and hide the side panels: thumbs need the corners
-    this.cluster.style.bottom = '104px';
-    this.cluster.style.right = '18px';
-    this.cluster.style.transform = 'scale(0.74)';
-    this.cluster.style.transformOrigin = 'bottom right';
-    this.tripLine.style.display = 'none';
+    this.pauseHint.textContent = 'TAP TO RESUME';
+    this.setCredits(this.creditCount);
+    // a button shouldn't vanish mid-blink: gentler pulse than the cabinet text
+    this.coinEl.getAnimations().forEach((a) => a.cancel());
+    this.coinEl.animate([{ opacity: 1 }, { opacity: 0.55 }, { opacity: 1 }], { duration: 1600, iterations: Infinity });
+    // layout.ts places these per orientation; drop their desktop anchoring
+    installHudStyles(true);
+    unpin(this.cluster);
+    unpin(this.hBox);
+    unpin(this.statusEl);
+    for (const seg of this.healthSegs) seg.style.width = '5px';
+    this.speedSize = 40;
     this.setDaily(...this.dailyArgs);
+    this.syncMenus();
   }
 
   /** bowed segmented column — the signature gauge of the cluster.
@@ -419,7 +470,7 @@ export class Hud {
         text-anchor="middle" font-size="9" fill="${c === 'N' ? AMBER : 'rgba(255,255,255,0.75)'}"
         font-family="inherit">${c}</text>`;
     });
-    const box = el(this.root, `position:absolute;left:30px;top:74px;width:104px;height:104px;opacity:0.92;`);
+    const box = el(this.root, `position:absolute;left:30px;top:74px;width:104px;height:104px;opacity:0.92;`, '', 'nr-compass nr-chrome');
     box.innerHTML = `
       <svg viewBox="0 0 100 100" width="104" height="104">
         <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="0.8"/>
@@ -468,7 +519,7 @@ export class Hud {
 
   setSpeed(mph: number, gear: string) {
     // drawn numerals, sized to match the old 78px system face
-    this.mph.innerHTML = numerals(Math.round(Math.abs(mph)), 58, '#fff', 1.05, 2.1);
+    this.mph.innerHTML = numerals(Math.round(Math.abs(mph)), this.speedSize, '#fff', 1.05, 2.1);
     this.gear.innerHTML = `<i></i>${gear}`;
   }
   setFuel(f01: number) {
@@ -478,6 +529,8 @@ export class Hud {
     this.fuelReadout.innerHTML =
       `<i></i>` + numerals(Math.round(pc * 100), 13, low ? RED : AMBER, 1.5, 1.9);
     this.fuelLabel.style.color = low ? RED : AMBER;
+    this.touchFuel.style.width = `${(pc * 100).toFixed(1)}%`;
+    this.touchFuel.style.background = low ? RED : AMBER;
   }
   setHealth(h01: number) {
     const pc = Math.max(0, Math.min(1, h01));
@@ -487,9 +540,12 @@ export class Hud {
     }
   }
   setCredits(n: number) {
+    this.creditCount = n;
     this.credits.textContent = `CREDITS ${n}`;
-    this.attractCreditLine.textContent =
-      n > 0 ? `${n} CREDIT${n > 1 ? 'S' : ''} — PRESS ENTER TO START` : 'NO CREDITS';
+    const plural = `${n} CREDIT${n > 1 ? 'S' : ''}`;
+    this.attractCreditLine.textContent = this.touchMode
+      ? (n > 0 ? plural : 'FREE PLAY — TAP TO INSERT COIN')
+      : (n > 0 ? `${plural} — PRESS ENTER TO START` : 'NO CREDITS');
   }
   setCheckpoints(k: number, n: number, daily = false) {
     this.checkpoints.textContent = `${daily ? 'DAILY CP' : 'CHECKPOINT'} ${k}/${n}`;
@@ -521,8 +577,12 @@ export class Hud {
   }
   showAttract(v: boolean) {
     this.attractEl.style.display = v ? 'flex' : 'none';
+    this.menus.attract = v;
+    this.syncMenus();
   }
   showGameOver(reason: string | null, credits: number, countdown: number) {
+    this.menus.gameOver = !!reason;
+    this.syncMenus();
     if (!reason) {
       this.gameOverEl.style.display = 'none';
       return;

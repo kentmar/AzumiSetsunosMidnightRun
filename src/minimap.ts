@@ -29,11 +29,11 @@ export class Minimap {
   private fullLabel!: HTMLDivElement;
 
   constructor(parent: HTMLElement, compact = false) {
-    this.size = compact ? 146 : 224;
-    const pos = compact
-      ? 'right:12px;top:calc(96px + env(safe-area-inset-top));'
-      : 'right:26px;bottom:24px;';
+    this.size = compact ? 120 : 224;
+    // compact (touch) placement comes from layout.ts, per orientation
+    const pos = compact ? '' : 'right:26px;bottom:24px;';
     this.wrap = document.createElement('div');
+    this.wrap.className = 'nr-minimap nr-chrome';
     this.wrap.style.cssText = `position:absolute;${pos}width:${this.size}px;
       display:none;pointer-events:none;`;
     parent.appendChild(this.wrap);
@@ -45,15 +45,25 @@ export class Minimap {
       border:2px solid rgba(255,184,77,0.5);background:rgba(6,4,10,0.72);
       box-shadow:0 0 18px rgba(0,0,0,0.6), inset 0 0 30px rgba(0,0,0,0.5);`;
     this.wrap.appendChild(this.canvas);
+    if (compact) {
+      // touch: the map itself is the button (layout.ts gives it pointer events)
+      this.canvas.dataset.nrbtn = '1';
+      this.canvas.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        this.requestToggle?.();
+      });
+    }
     this.ctx = this.canvas.getContext('2d')!;
 
     this.crossStreet = document.createElement('div');
+    this.crossStreet.className = 'nr-xstreet';
     this.crossStreet.style.cssText = `margin-top:6px;text-align:center;font-size:11px;
       letter-spacing:2px;color:#ffb84d;text-shadow:0 0 8px rgba(255,150,40,0.6);
       text-transform:uppercase;white-space:nowrap;`;
     this.wrap.appendChild(this.crossStreet);
 
     const mapBtn = document.createElement('div');
+    mapBtn.className = 'nr-minimap-btn';
     mapBtn.textContent = compact ? 'MAP' : 'MAP [M]';
     mapBtn.style.cssText = `margin:6px auto 0;width:max-content;padding:4px 14px;
       font-size:11px;letter-spacing:3px;color:#58e6ff;border:1px solid rgba(88,230,255,0.5);
